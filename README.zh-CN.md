@@ -17,9 +17,9 @@ DataPie是一个低代码数据平台，为快速构建AI和BI应用而生。
 - **人工智能**：快捷地管理预训练模型及生成AI应用！(2024年完成)
 
 # DataSeer
-Backend server of DataPie for ML and AI
+支持ML和AI功能的后端服务器
 
-## Key components
+## 关键组件
 
 Python: 3.10
 
@@ -39,7 +39,7 @@ mlflow: 2.14
 
 ray: 2.32
 
-## usage
+## 用法
 
 ```shell
 # install components
@@ -53,7 +53,7 @@ python main.py run
 ```
 
 
-## Other
+## 其他
 ```shell
 # migrate database
 python main.py migrate --env dev
