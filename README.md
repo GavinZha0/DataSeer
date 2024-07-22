@@ -17,9 +17,9 @@ Sklearn: 1.42
 
 Featuretools: 1.31
 
-mlflow: 2.13
+mlflow: 2.14
 
-ray: 2.20
+ray: 2.32
 
 ## usage
 
