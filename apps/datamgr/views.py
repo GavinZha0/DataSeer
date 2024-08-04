@@ -8,6 +8,9 @@
 import base64
 from itertools import groupby
 from operator import itemgetter
+
+import torchaudio
+import torchvision
 from fastapi import APIRouter, Depends
 
 from core.crud import RET
@@ -63,14 +66,39 @@ async def get_datasource(source_id: int, auth: Auth = Depends(AllUserAuth())):
     return SuccessResponse(data)
 
 
-@app.post("/datasource/tables", summary="Get Datasource tree")
-async def get_datasource_tables(p: param.SrcTableParams = Depends(), auth: Auth = Depends(AllUserAuth())):
+@app.post("/datasource/sets_2222222", summary="Get Datasource sets")
+async def get_datasource_sets(p: param.SrcTableParams = Depends(), auth: Auth = Depends(AllUserAuth())):
     src_info = await crud.DatasourceDal(auth.db).get_data(p.id, v_schema=schema.DatasourceSimpleOut, v_where=[
         model.Datasource.org_id == auth.user.oid])
     passport = src_info['username'] + ':' + base64.b64decode(src_info['password']).decode('utf-8')
     db = DbExecutor(src_info['type'], src_info['url'], passport, src_info['params'])
     tables = inspect(db.engine).get_table_names()
     return SuccessResponse({'records': [{'id': idx, 'name': name} for idx, name in enumerate(tables)]})
+
+@app.post("/datasource/sets", summary="Get Datasource sets")
+async def get_datasource_sets(req: schema.DatasourceSets, auth: Auth = Depends(AllUserAuth())):
+    src_info = await crud.DatasourceDal(auth.db).get_data(req.id, v_where=[model.Datasource.org_id == auth.user.oid])
+    response = {}
+    if src_info is None:
+        return SuccessResponse(response)
+
+    if src_info.type == 'datahub':
+        cat = src_info.url.split('/')[-1]
+        match cat:
+            case 'pytorch':
+                audioset = list(torchaudio.datasets.__all__)
+                audioset.sort()
+                audio_tree = {'id': 1, 'name': 'audio', 'selectable': False,
+                              'children': [{'id': 100 + idx, 'name': name} for idx, name in enumerate(audioset)]}
+
+                visionset = list(torchvision.datasets.__all__)
+                visionset.sort()
+                vision_tree = {'id': 2, 'name': 'vision', 'selectable': False,
+                               'children': [{'id': 200+idx, 'name': name} for idx, name in enumerate(visionset)]}
+
+                response = {'records': [audio_tree, vision_tree]}
+
+    return SuccessResponse(response)
 
 
 @app.post("/datasource/execute", summary="Exe sql on a source ")

@@ -17,14 +17,13 @@ class Algo(BaseModel):
     name: str = Field(..., title="Name")
     desc: str | None = Field(None, title="Description")
     group: str | None = Field("default", title="Group")
-    category: str = Field(..., title="Category")
     framework: str | None = Field("python", title="Framework")
     frameVer: str | None = Field("3.10", title="Frame version", alias='frame_ver')
+    category: str = Field(..., title="Category")
     srcCode: str | None = Field(None, title="Source code", alias='src_code')
-    attr: str | None = Field(None, title="Attribute")
-    config: str | None = Field(None, title="Config")
+    dataCfg: str | None = Field(None, title="Data Config", alias='data_cfg')
+    trainCfg: str | None = Field(None, title="Train Config", alias='train_cfg')
     algoName: str | None = Field(None, title="Algo name", alias='algo_name')
-    datasetId: int | None = Field(..., title="Dataset id", alias='dataset_id')
     public: bool = Field(False, title="Public")
     orgId: int = Field(..., title="Org id", alias='org_id')
     createdBy: str = Field(..., title="Created by", alias='created_by')
@@ -32,7 +31,7 @@ class Algo(BaseModel):
     updatedBy: str | None = Field(..., title="Updated by", alias='updated_by')
     updatedAt: DatetimeStr | None = Field(..., title="Updated at", alias='updated_at')
 
-    @field_validator('attr', 'config', mode='after')
+    @field_validator('dataCfg', 'trainCfg', mode='after')
     @classmethod
     def config_validator(cls, v: str) -> dict:
         if v is not None and len(v) > 0:

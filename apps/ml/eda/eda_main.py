@@ -19,26 +19,15 @@ return pandas dataframe
 async def extract_data(dataset_id: int, db: AsyncSession):
     # get dataset and datasource info
     dataset_info = await ml_crud.DatasetDal(db).get_data(dataset_id, v_ret=RET.SCHEMA)
-    source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info['source_id'], v_ret=RET.SCHEMA)
-
-    dataset_fields = None
-    dataset_transform = None
-    dataset_variable = None
-    # convert to json from string
-    if dataset_info.get('fields') is not None and len(dataset_info['fields']) > 2:
-        dataset_fields = json.loads(dataset_info['fields'])
-    if dataset_info.get('transformable') is not None and len(dataset_info['transform']) > 2:
-        dataset_transform = json.loads(dataset_info['transform'])
-    if dataset_info.get('variable') is not None and len(dataset_info['variable']) > 2:
-        dataset_variable = json.loads(dataset_info['variable'])
+    source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info.sourceId, v_ret=RET.SCHEMA)
 
     # connect to target db
-    passport = source_info['username'] + ':' + base64.b64decode(source_info['password']).decode('utf-8')
-    db = DbExecutor(source_info['type'], source_info['url'], passport, source_info['params'])
+    passport = source_info.username + ':' + base64.b64decode(source_info.password).decode('utf-8')
+    db = DbExecutor(source_info.type, source_info.url, passport, source_info.params)
 
     # query data and get dataframe of Pandas
-    dataframe, total = db.db_query(dataset_info['query'], None, dataset_variable)
-    return dataframe, dataset_fields, dataset_transform
+    dataframe, total = await db.db_query(dataset_info.query, None, dataset_info.variable)
+    return dataframe, dataset_info.fields, dataset_info.transform
 
 """
 transform data

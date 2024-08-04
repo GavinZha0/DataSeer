@@ -10,7 +10,7 @@ import uvicorn
 from starlette.middleware.cors import CORSMiddleware
 from config import settings, router
 from starlette.staticfiles import StaticFiles
-from config.settings import REDIS_ENABLE, RAY_NUM_CPU, RAY_NUM_GPU
+from config.settings import REDIS_ENABLE, RAY_NUM_CPU, RAY_NUM_GPU, RAY_LOCAL_MODE
 from core.docs import custom_api_docs
 from core.exception import register_exception
 import typer
@@ -77,7 +77,8 @@ def run(
         RedisListener()
 
     # init ray to connect to cluster when cluster mode
-    ray.init(ignore_reinit_error=True, num_cpus=RAY_NUM_CPU, num_gpus=RAY_NUM_GPU)
+    ray.init(ignore_reinit_error=True, local_mode=RAY_LOCAL_MODE, num_cpus=RAY_NUM_CPU, num_gpus=RAY_NUM_GPU)
+    # ray.autoscaler.sdk.request_resources(bundles=[{"GPU": 1}] * 1)
 
     # start python server with single worker or multiple workers
     # different workers can be run on different CPU cores

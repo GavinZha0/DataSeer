@@ -14,13 +14,13 @@ from utils.db_executor import DbExecutor
 from . import param, schema, crud, model
 from apps.datamgr import model as dm_models
 from apps.datamgr import crud as dm_crud
-from utils.response import SuccessResponse
+from utils.response import SuccessResponse, ErrorResponse
 from apps.auth.token import Auth
 from itertools import groupby
-from .algo.algo_main import extract_data, transform_data, extract_existing_algos, train_pipeline
+from .algo.algo_main import extract_existing_algos, train_pipeline
+from .eda.eda_main import extract_data, transform_data, eda_build_chart
 import pandas as pd
 
-from .eda.eda_main import eda_build_chart
 
 app = APIRouter()
 
@@ -159,8 +159,11 @@ async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAut
 
 @app.post("/algo/execute", summary="train algo")
 async def execute_algo(req: schema.AlgoExeParam, auth: Auth = Depends(AllUserAuth())):
-    await train_pipeline(req.id, auth.db, auth.user)
-    return SuccessResponse()
+    result = await train_pipeline(req.id, auth.db, auth.user)
+    if result is False:
+        return ErrorResponse()
+    else:
+        return SuccessResponse()
 
 
 ###########################################################

@@ -4,10 +4,8 @@
 # @Create Time    : 2024/2/15
 # @File           : ray_tuner.py
 # @desc           : train ml
-
 import os
 from typing import Dict
-import matplotlib
 import mlflow
 import pandas as pd
 import ray
@@ -15,18 +13,19 @@ import ray.tune.search as search
 import ray.tune.schedulers as schedule
 from pandas import CategoricalDtype
 from ray import tune, train
+from ray.exceptions import RayError
 from ray.tune.experimental.output import get_air_verbosity, AirVerbosity
 from sklearn.model_selection import train_test_split
 from sqlalchemy import create_engine
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
 from msgq.redis_client import RedisClient
-from utils.ray_reporter import RayReport
+from utils.ray.ray_reporter import RayReport
 
 RAY_EXCEPT_REPORT = 6
 
 @ray.remote
-class RayTuner:
+class SklearnTrainer:
     def __init__(self, type: str, url: str, username: str, password: str):
         self.type = type
         self.engine = None
@@ -44,7 +43,7 @@ class RayTuner:
         return df
 
     # transform data based on dataset field config
-    def transform(self, df: pd.DataFrame, fields):
+    def transform(self, df: pd.DataFrame, fields, ratio: int, shuffle: bool):
         for it in fields:
             if it.get('omit'):
                 # delete omit fields
@@ -162,10 +161,8 @@ class RayTuner:
                 case 'l2':
                     df[field_name] = pp.Normalizer(norm='l2').fit_transform(df[field_name])
         self.transformed_df = df
-        return df
 
-    # split/shuffle data for train and test
-    def shuffle(self, df: pd.DataFrame, targets: [str] = list, ratio: int = 0.3, shuffle: bool = False):
+        targets = [field['name'] for field in fields if 'target' in field and 'omit' not in field]
         # Split the data into train and test sets.
         cols = df.columns.tolist()
         features = list(set(cols).difference(set(targets)))
@@ -175,7 +172,7 @@ class RayTuner:
         return data
 
     # train ML algo based on ray and mlflow
-    def train(self, framework: str, params: dict, cls, data: Dict):
+    def train(self, params: dict, cls, data: Dict):
         # use AWS S3/minio as artifact repository
         os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
         os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')
@@ -189,10 +186,6 @@ class RayTuner:
         # enable custom ProgressReporter when set to 0
         os.environ['RAY_AIR_NEW_OUTPUT'] = '0'
 
-        # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
-        matplotlib.use('agg')
-        mlflow.autolog()
-
         # check if current experiment exists
         exper = mlflow.get_experiment_by_name(params['exper_name'])
         if exper:
@@ -204,36 +197,43 @@ class RayTuner:
                                      artifact_location=params['artifact_location'])
 
         params['tune_param']['exper_id'] = params['exper_id']
-
-        match framework:
-            case 'sklearn':
-                # storage_path is not used because we are using mlflow to save result on S3
-                tune_func = tune.with_parameters(cls.train, data=data)
-                tune_cfg = tune.TuneConfig(num_samples=params['trials'],
-                                            search_alg=search.BasicVariantGenerator(max_concurrent=3),
-                                            scheduler=schedule.ASHAScheduler(mode="max"),
-                                            time_budget_s=params['timeout']*60 if params.get('timeout') else None)
-                run_cfg = train.RunConfig(name=params['exper_name'], stop=params.get('stop'),
-                                            verbose=get_air_verbosity(AirVerbosity.SILENT),
-                                            log_to_file=False, storage_path=None,
-                                            checkpoint_config=train.CheckpointConfig(checkpoint_at_end=False),
-                                            callbacks=[RayReport(params['user_id'], params['algo_id'],
-                                                                params['exper_id'], params['trials'],
-                                                                params['tune_param']['epochs'],
-                                                                params.get('metrics'))])
-
-                tuner = tune.Tuner(trainable=tune_func, tune_config=tune_cfg,
-                                run_config=run_cfg, param_space=params['tune_param'])
-
-                try:
-                    report = {'userId': params['user_id'],
-                              'payload': {'code': RAY_EXCEPT_REPORT, 'msg': '',
-                                          'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
-                    # start train......
-                    result = tuner.fit()
-                except ValueError:
-                    report['payload']['msg'] = 'tuner.fit() exception'
-                    print(report)
-                    RedisClient().feedback(report)
+        # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
+        # matplotlib.use('agg')
+        # mlflow.autolog()
 
 
+        if params.get('gpu') == True:
+            tune_func = tune.with_resources(tune.with_parameters(cls.train, data=data), resources={"gpu": 1})
+        else:
+            tune_func = tune.with_parameters(cls.train, data=data)
+
+        tune_cfg = tune.TuneConfig(num_samples=params['trials'],
+                                   search_alg=search.BasicVariantGenerator(max_concurrent=1),
+                                   scheduler=schedule.ASHAScheduler(mode="max"),
+                                   time_budget_s=params['timeout'] * 60 if params.get('timeout') else None)
+        # storage_path is not used because we are using mlflow to save result on S3
+        run_cfg = train.RunConfig(name=params['exper_name'],  stop=params.get('stop'),
+                                  verbose=get_air_verbosity(AirVerbosity.DEFAULT),
+                                  log_to_file=False, storage_path=None,
+                                  checkpoint_config=train.CheckpointConfig(checkpoint_at_end=False),
+                                  callbacks=[RayReport(params['user_id'], params['algo_id'],
+                                                       params['exper_id'], params['trials'],
+                                                       params['tune_param']['epochs'],
+                                                       params.get('metrics'))]
+                                  )
+
+        tuner = tune.Tuner(trainable=tune_func,
+                           tune_config=tune_cfg,
+                           run_config=run_cfg,
+                           param_space=params['tune_param'])
+
+        try:
+            report = {'userId': params['user_id'],
+                      'payload': {'code': RAY_EXCEPT_REPORT, 'msg': '',
+                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
+            # start train......
+            result = tuner.fit()
+        except RayError as e:
+            print(e)
+            report['payload']['msg'] = 'tuner.fit() exception'
+            RedisClient().feedback(report)

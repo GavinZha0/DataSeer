@@ -9,9 +9,9 @@
 Database config
 """
 # main database of DataPie
-SQLALCHEMY_DATABASE_URL = "mysql+asyncmy://username:password@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/datapie"
+SQLALCHEMY_DATABASE_URL = "mysql+asyncmy://admin:admin520@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/datapie"
 # mlflow db to track ML lifecycle
-SQLALCHEMY_MLFLOW_DB_URL = "mysql+pymysql://username:password@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/mlflow"
+SQLALCHEMY_MLFLOW_DB_URL = "mysql+pymysql://admin:admin520@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/mlflow"
 
 """
 Redis config
@@ -43,6 +43,6 @@ MONGO_DB_URL = f"mongodb://username:password@127.0.0.1:27017/?authSource={MONGO_
 AWS S3 config
 """
 AWS_S3_ENDPOINT = "https://s3.us-east-2.amazonaws.com"
-AWS_S3_ACCESS_KEY = ""
-AWS_S3_SECRET_KEY = ""
+AWS_S3_ACCESS_ID = "AKIAYSIQQG2SQMGUGNJK"
+AWS_S3_SECRET_KEY = "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"
 AWS_S3_BUCKET = "datapie"

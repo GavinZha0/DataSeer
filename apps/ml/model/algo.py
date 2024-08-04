@@ -22,12 +22,11 @@ class Algo(BaseDbModel):
     group: Mapped[Optional[str]] = mapped_column(String(64), default='default', comment="Group")
     category: Mapped[str] = mapped_column(String(16), comment="Category")
     framework: Mapped[Optional[str]] = mapped_column(String(16), default='python', comment="Framework")
-    frame_ver: Mapped[Optional[str]] = mapped_column(String(8), default='3.10', comment="Frame version")
+    frame_ver: Mapped[Optional[str]] = mapped_column(String(8), default='3.11', comment="Frame version")
     algo_name: Mapped[Optional[str]] = mapped_column(String(64), comment="Algo name")
     src_code: Mapped[Optional[str]] = mapped_column(Text, comment="Content")
-    attr: Mapped[Optional[str]] = mapped_column(Text, comment="Attribute")
-    config: Mapped[Optional[str]] = mapped_column(Text, comment="Config")
-    dataset_id: Mapped[int] = mapped_column(Integer, comment="Dataset id")
+    data_cfg: Mapped[Optional[str]] = mapped_column(Text, comment="Attribute")
+    train_cfg: Mapped[Optional[str]] = mapped_column(Text, comment="Config")
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Public")
 
     # bind to unique org

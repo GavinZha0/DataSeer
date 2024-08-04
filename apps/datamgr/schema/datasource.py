@@ -6,6 +6,7 @@
 # @IDE            : PyCharm
 # @desc           : pydantic model
 import json
+from typing import Optional
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from core.data_types import DatetimeStr
@@ -40,3 +41,7 @@ class Datasource(BaseModel):
             # return execjs.eval(v)
         else:
             return v
+
+class DatasourceSets(BaseModel):
+    id: int = Field(..., title="Source Id"),
+    type: str = Field(..., title="Source Type")

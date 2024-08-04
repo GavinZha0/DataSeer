@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 # @version        : 1.0
-# @Create Time    : 2023/7/16 12:42
+# @Create Time    : 2023/7/16
 # @File           : data_types.py
 # @desc           : custom data type
 
