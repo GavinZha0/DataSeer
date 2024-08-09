@@ -7,8 +7,7 @@ RAY_STEP_REPORT = 1
 RAY_EPOCH_REPORT = 2
 RAY_TRIAL_REPORT = 3
 RAY_EXPERIMENT_REPORT = 4
-RAY_JOB_REPORT = 5
-
+RAY_JOB_EXCEPTION = 5
 
 class RayReport(Callback):
     def __init__(self, user_id, algo_id, exper_id, num_trials, num_epochs, metrics):
@@ -21,6 +20,14 @@ class RayReport(Callback):
         self.total_trials = num_trials
         self.completed_epochs = 0
         self.total_epochs = num_trials * num_epochs
+
+    # start a new experiment
+    def setup(self, stop, num_samples, total_num_samples, **info):
+        # status 1: experiment start
+        report = {'userId': self.user, 'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '', 'data': {}}}
+        payload_data = {'algoId': self.algo, 'experId': self.exper, 'status': 1}
+        report['payload']['data'] = payload_data
+        RedisClient().feedback(report)
 
     # per step (not used)
     def on_step_end_unused(self, iteration, trials, **info):
@@ -82,8 +89,9 @@ class RayReport(Callback):
 
     # per experiment
     def on_experiment_end(self, trials, **info):
+        # status 0: experiment end
         report = {'userId': self.user, 'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'trial': []}
+        payload_data = {'algoId': self.algo, 'experId': self.exper, 'status': 0, 'trials': []}
         report['payload']['data'] = payload_data
 
         for trial in trials:
@@ -96,7 +104,7 @@ class RayReport(Callback):
                 for kpi_name in self.metrics:
                     evaluation[kpi_name] = trial.last_result.get(kpi_name)
                 trial_info['eval'] = evaluation
-            payload_data['trial'].append(trial_info)
+            payload_data['trials'].append(trial_info)
         print(report)
         RedisClient().feedback(report)
 

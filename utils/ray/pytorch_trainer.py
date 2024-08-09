@@ -18,8 +18,8 @@ from ray.train.torch import TorchConfig, TorchTrainer
 from msgq.redis_client import RedisClient
 from ray import tune, train
 import ray.tune.search as search
+from utils.ray.ray_reporter import RAY_EXPERIMENT_REPORT, RAY_JOB_EXCEPTION
 
-RAY_EXCEPT_REPORT = 6
 TEMP_DIR = tempfile.mkdtemp()
 
 @ray.remote
@@ -107,19 +107,27 @@ class PyTorchTrainer:
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3))
         run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
                                   checkpoint_config=False, log_to_file=False, storage_path=None)
+
+        report = {'userId': params['user_id'],
+                  'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '',
+                              'data': {'algoId': params['algo_id'], 'experId': params['exper_id'], 'status': 1}}}
+        RedisClient().feedback(report)
         tuner = tune.Tuner(trainable=trainer,
                            tune_config=tune_cfg,
                            run_config=run_cfg,
                            param_space={"train_loop_config": params['tune_param']})
         try:
-            report = {'userId': params['user_id'],
-                      'payload': {'code': RAY_EXCEPT_REPORT, 'msg': '',
-                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
             # start train......
             result = tuner.fit()
         except ValueError:
-            report['payload']['msg'] = 'tuner.fit() exception'
-            print(report)
-        RedisClient().feedback(report)
+            exception = {'userId': params['user_id'],
+                      'payload': {'code': RAY_JOB_EXCEPTION, 'msg': 'tuner.fit exception',
+                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
+            # report['payload']['data']['detail'] = e
+            print(exception)
+            RedisClient().feedback(exception)
+        else:
+            report['payload']['data']['status'] = 0
+            RedisClient().feedback(report)
 
 

@@ -20,9 +20,8 @@ from sqlalchemy import create_engine
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
 from msgq.redis_client import RedisClient
-from utils.ray.ray_reporter import RayReport
+from utils.ray.ray_reporter import RayReport, RAY_JOB_EXCEPTION
 
-RAY_EXCEPT_REPORT = 6
 
 @ray.remote
 class SklearnTrainer:
@@ -201,7 +200,6 @@ class SklearnTrainer:
         # matplotlib.use('agg')
         # mlflow.autolog()
 
-
         if params.get('gpu') == True:
             tune_func = tune.with_resources(tune.with_parameters(cls.train, data=data), resources={"gpu": 1})
         else:
@@ -219,21 +217,22 @@ class SklearnTrainer:
                                   callbacks=[RayReport(params['user_id'], params['algo_id'],
                                                        params['exper_id'], params['trials'],
                                                        params['tune_param']['epochs'],
-                                                       params.get('metrics'))]
-                                  )
+                                                       params.get('metrics'))])
 
+        ray_job_id = ray.get_runtime_context().get_job_id()
+        print(f'...............{ray_job_id}')
         tuner = tune.Tuner(trainable=tune_func,
                            tune_config=tune_cfg,
                            run_config=run_cfg,
                            param_space=params['tune_param'])
 
         try:
-            report = {'userId': params['user_id'],
-                      'payload': {'code': RAY_EXCEPT_REPORT, 'msg': '',
-                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
             # start train......
             result = tuner.fit()
         except RayError as e:
             print(e)
-            report['payload']['msg'] = 'tuner.fit() exception'
+            report = {'userId': params['user_id'],
+                      'payload': {'code': RAY_JOB_EXCEPTION, 'msg': 'tuner.fit exception',
+                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
+            # report['payload']['data']['detail'] = e
             RedisClient().feedback(report)
