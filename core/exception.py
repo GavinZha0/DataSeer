@@ -61,8 +61,9 @@ def register_exception(app: FastAPI):
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         if DEVELOPMENT:
-            print("URL", request.url.__str__())
             print("CustomException：validation_exception_handler")
+            print("Http url: ", request.url.__str__())
+            print("Http body: ", exc.body)
             print(exc.errors())
         logger.exception(exc)
         msg = exc.errors()[0].get("msg")

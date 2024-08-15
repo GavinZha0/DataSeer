@@ -15,12 +15,12 @@ import torch
 import torchvision.datasets
 from ray.air import ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
+
+from config.settings import TEMP_DIR
 from msgq.redis_client import RedisClient
 from ray import tune, train
 import ray.tune.search as search
 from utils.ray.ray_reporter import RAY_EXPERIMENT_REPORT, RAY_JOB_EXCEPTION
-
-TEMP_DIR = tempfile.mkdtemp()
 
 @ray.remote
 class PyTorchTrainer:
@@ -43,7 +43,7 @@ class PyTorchTrainer:
             case 'PYTORCH':
                 transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor(),
                                                             torchvision.transforms.Normalize((0.5,), (0.5,))])
-                self.dataset = eval(f'torchvision.datasets.{dataset_name}')(TEMP_DIR, train=True, download=True, transform=transform)
+                self.dataset = eval(f'torchvision.datasets.{dataset_name}')(TEMP_DIR+'/data/', train=True, download=True, transform=transform)
         return self.dataset
 
     # transform/split/shuffle
@@ -75,15 +75,12 @@ class PyTorchTrainer:
         # os.environ["RANK"] = '0'
 
         params['tune_param']['dist'] = True
-        # check if current experiment exists
-        exper = mlflow.get_experiment_by_name(params['exper_name'])
-        if exper:
-            params['exper_id'] = exper.experiment_id
-        else:
-            # create a new experiment
-            exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'], 'algo_name': params['algo_name']}
-            params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
-                                     artifact_location=params['artifact_location'])
+
+        # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
+        exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'],
+                      'algo_name': params['algo_name'], 'user_id': params['user_id'], 'args': '|'.join(params['args'])}
+        params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
+                                                      artifact_location=params['artifact_location'])
 
         params['tune_param']['exper_id'] = params['exper_id']
         params['tune_param']['data'] = data
@@ -101,12 +98,13 @@ class PyTorchTrainer:
             torch_config=torch_cfg
         )
 
-        # storage_path is not used because we are using mlflow to save result on S3
+        # ray will save tune results into storage_path with sub-folder exper_name
+        # this is not used because we are using mlflow to save result on S3
         # earlystop will cause run.status is still running and end_time will be null
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3))
         run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
-                                  checkpoint_config=False, log_to_file=False, storage_path=None)
+                                  checkpoint_config=False, log_to_file=False, storage_path=TEMP_DIR+'/tune/')
 
         report = {'userId': params['user_id'],
                   'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '',

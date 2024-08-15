@@ -105,5 +105,5 @@ MIDDLEWARES = [
 Ray config
 """
 RAY_LOCAL_MODE = False
-RAY_NUM_CPU = 5
+RAY_NUM_CPU = 3
 RAY_NUM_GPU = 1

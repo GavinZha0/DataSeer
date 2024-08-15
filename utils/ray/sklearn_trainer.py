@@ -19,6 +19,8 @@ from sklearn.model_selection import train_test_split
 from sqlalchemy import create_engine
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
+
+from config.settings import TEMP_DIR
 from msgq.redis_client import RedisClient
 from utils.ray.ray_reporter import RayReport, RAY_JOB_EXCEPTION
 
@@ -185,15 +187,12 @@ class SklearnTrainer:
         # enable custom ProgressReporter when set to 0
         os.environ['RAY_AIR_NEW_OUTPUT'] = '0'
 
-        # check if current experiment exists
-        exper = mlflow.get_experiment_by_name(params['exper_name'])
-        if exper:
-            params['exper_id'] = exper.experiment_id
-        else:
-            # create a new experiment
-            exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'], 'algo_name': params['algo_name']}
-            params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
-                                     artifact_location=params['artifact_location'])
+        # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
+        exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'],
+                      'algo_name': params['algo_name'], 'user_id': params['user_id'], 'args': '|'.join(params['args'])}
+        params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
+                                                      artifact_location=params['artifact_location'])
+
 
         params['tune_param']['exper_id'] = params['exper_id']
         # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
@@ -209,18 +208,17 @@ class SklearnTrainer:
                                    search_alg=search.BasicVariantGenerator(max_concurrent=1),
                                    scheduler=schedule.ASHAScheduler(mode="max"),
                                    time_budget_s=params['timeout'] * 60 if params.get('timeout') else None)
-        # storage_path is not used because we are using mlflow to save result on S3
+        # ray will save tune results into storage_path with sub-folder exper_name
+        # this is not used because we are using mlflow to save result on S3
         run_cfg = train.RunConfig(name=params['exper_name'],  stop=params.get('stop'),
                                   verbose=get_air_verbosity(AirVerbosity.DEFAULT),
-                                  log_to_file=False, storage_path=None,
-                                  checkpoint_config=train.CheckpointConfig(checkpoint_at_end=False),
+                                  log_to_file=False, storage_path=TEMP_DIR+'/tune/',
+                                  checkpoint_config=False,
                                   callbacks=[RayReport(params['user_id'], params['algo_id'],
                                                        params['exper_id'], params['trials'],
                                                        params['tune_param']['epochs'],
                                                        params.get('metrics'))])
 
-        ray_job_id = ray.get_runtime_context().get_job_id()
-        print(f'...............{ray_job_id}')
         tuner = tune.Tuner(trainable=tune_func,
                            tune_config=tune_cfg,
                            run_config=run_cfg,

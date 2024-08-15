@@ -8,8 +8,9 @@ import ray
 import torchvision
 from pandas import CategoricalDtype
 from sqlalchemy.ext.asyncio import AsyncSession
-from apps.ml.algo.trainable_builder import build_ray_trainable
+from apps.ml.algo.algo_trainable import build_ray_trainable
 from config import settings
+from config.settings import TEMP_DIR
 from core.crud import RET
 from utils.db_executor import DbExecutor
 from apps.datamgr import crud as dm_crud
@@ -298,13 +299,10 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
         return False
 
     # import module and class from saved file
-    dy_module = importlib.import_module(f'temp.{params["module_name"]}')
+    dy_module = importlib.import_module(f'temp.ml.{params["module_name"]}')
     train_cls = getattr(dy_module, 'CustomTrain')
     if params.get('cls_name'):
         model_cls = getattr(dy_module, params['cls_name'])
-
-    # if not ray.is_initialized():
-    #     ray.init(local_mode=settings.RAY_LOCAL_MODE, ignore_reinit_error=True)
 
     if algo_info.framework == 'sklearn':
         # initialize RayUtils to create database connection
@@ -344,9 +342,8 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                     's3_url': settings.AWS_S3_ENDPOINT,
                     's3_id': settings.AWS_S3_ACCESS_ID,
                     's3_key': settings.AWS_S3_SECRET_KEY,
-                    'artifact_location': f"s3://pie-org-{algo.orgId}/ml/algo_{algo.id}",
-                    'exper_name': f"algo_{algo.id}",
-                    'start_ts': now_ts,
+                    'artifact_location': f"s3://datapie-{algo.orgId}/ml/algo_{algo.id}",
+                    'exper_name': f"algo_{algo.id}_{now_ts}",
                     'tune_param': {'user_id': user.id, 'epochs': 1, 'tracking_url': settings.SQLALCHEMY_MLFLOW_DB_URL}
                     }
 

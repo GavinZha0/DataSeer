@@ -1,9 +1,11 @@
 import string
 
+from config.settings import TEMP_DIR
+
 sklearn_setup_mlflow = '''
     mlflow.set_tracking_uri(config.get('tracking_url'))
     mlflow.set_experiment(experiment_id=config.get('exper_id'))
-    mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_id(), MLFLOW_USER: config.get('user_id')})
+    mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
     matplotlib.use('agg')
 '''
 
@@ -37,7 +39,9 @@ class CustomAlgo:
 
 pytorch_tpl = string.Template('''
 import os
+import ray
 import mlflow
+from mlflow.utils.mlflow_tags import MLFLOW_USER, MLFLOW_RUN_NAME
 from ray.air.integrations.mlflow import setup_mlflow
 from ray.train.lightning import prepare_trainer, RayTrainReportCallback
 from ray.train.torch import prepare_data_loader, prepare_model
@@ -62,11 +66,9 @@ class CustomTrain:
       model = prepare_model(model)
 
     torch.set_float32_matmul_precision('medium')
-    # config will be saved into mlflow
-    myflow = setup_mlflow(config, experiment_id=config.pop('exper_id'), tracking_uri=config.pop('tracking_url'))
-    # extra_tag doesn't work
-    myflow.autolog()
-    myflow.pytorch.autolog()
+    mlflow.set_tracking_uri(config.get('tracking_url'))
+    mlflow.set_experiment(experiment_id=config.get('exper_id'))
+    mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
 
     trainer = pl.Trainer(
       max_epochs=config.get("epochs", 1),
@@ -91,9 +93,23 @@ async def build_ray_trainable(framework: str, code: str, params: dict):
 
     try:
         # save trainable class to local file
-        with open(f'./temp/{params["module_name"]}.py', 'w') as file:
+        with open(f'{TEMP_DIR}/ml/{params["module_name"]}.py', 'w') as file:
             file.write(trainable_code)
     except:
         return False
 
     return True
+
+
+
+# for pytorch lightning trainable function
+# myflow's extra_tag doesn't work, but mlflow works. Is mlflow global instance? Will it impact others?
+# and you will see error about 'unsupported autologging version', but works
+# myflow = setup_mlflow(experiment_id=config.pop('exper_id'), tracking_uri=config.pop('tracking_url'))
+# myflow.pytorch.autolog(extra_tags={MLFLOW_USER: 3})
+# mlflow.set_tracking_uri(config.get('tracking_url'))
+# mlflow.set_experiment(experiment_id=config.get('exper_id'))
+# mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: 3})
+
+# for sklearn
+# setup_mlflow doesn't work, so have to use global mlflow
