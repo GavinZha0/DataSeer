@@ -6,21 +6,18 @@
 # @desc           : train ml
 
 import os
-import tempfile
 from typing import Dict
-import matplotlib
 import mlflow
 import ray
 import torch
 import torchvision.datasets
 from ray.air import ScalingConfig
+from ray.exceptions import RayError
 from ray.train.torch import TorchConfig, TorchTrainer
-
 from config.settings import TEMP_DIR
-from msgq.redis_client import RedisClient
 from ray import tune, train
 import ray.tune.search as search
-from utils.ray.ray_reporter import RAY_EXPERIMENT_REPORT, RAY_JOB_EXCEPTION
+from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 
 @ray.remote
 class PyTorchTrainer:
@@ -84,10 +81,14 @@ class PyTorchTrainer:
 
         params['tune_param']['exper_id'] = params['exper_id']
         params['tune_param']['data'] = data
-        mlflow.set_experiment(experiment_id=params['exper_id'])
         # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
-        matplotlib.use('agg')
+        # matplotlib.use('agg')
         # mlflow.autolog()
+
+        # create progress report
+        progressRpt = RayReport(params['user_id'], params['algo_id'], params['exper_id'], params['trials'],
+                                params['tune_param']['epochs'], params.get('metrics'))
+        progressRpt.experimentProgress(JOB_PROGRESS_START)
 
         # Configure computation resources
         scaling_cfg = ScalingConfig(num_workers=1, use_gpu=True)
@@ -106,10 +107,6 @@ class PyTorchTrainer:
         run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
                                   checkpoint_config=False, log_to_file=False, storage_path=TEMP_DIR+'/tune/')
 
-        report = {'userId': params['user_id'],
-                  'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '',
-                              'data': {'algoId': params['algo_id'], 'experId': params['exper_id'], 'status': 1}}}
-        RedisClient().feedback(report)
         tuner = tune.Tuner(trainable=trainer,
                            tune_config=tune_cfg,
                            run_config=run_cfg,
@@ -117,15 +114,11 @@ class PyTorchTrainer:
         try:
             # start train......
             result = tuner.fit()
-        except ValueError:
-            exception = {'userId': params['user_id'],
-                      'payload': {'code': RAY_JOB_EXCEPTION, 'msg': 'tuner.fit exception',
-                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
-            # report['payload']['data']['detail'] = e
-            print(exception)
-            RedisClient().feedback(exception)
+        except RayError as e:
+            print(e)
+            progressRpt.experimentException(e)
         else:
-            report['payload']['data']['status'] = 0
-            RedisClient().feedback(report)
+            # report progress
+            progressRpt.experimentProgress(JOB_PROGRESS_END)
 
 

@@ -19,10 +19,8 @@ from sklearn.model_selection import train_test_split
 from sqlalchemy import create_engine
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
-
 from config.settings import TEMP_DIR
-from msgq.redis_client import RedisClient
-from utils.ray.ray_reporter import RayReport, RAY_JOB_EXCEPTION
+from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 
 
 @ray.remote
@@ -193,11 +191,15 @@ class SklearnTrainer:
         params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
                                                       artifact_location=params['artifact_location'])
 
-
         params['tune_param']['exper_id'] = params['exper_id']
         # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
         # matplotlib.use('agg')
         # mlflow.autolog()
+
+        # create progress report
+        progressRpt = RayReport(params['user_id'], params['algo_id'], params['exper_id'], params['trials'],
+                                params['tune_param']['epochs'], params.get('metrics'))
+        progressRpt.experimentProgress(JOB_PROGRESS_START)
 
         if params.get('gpu') == True:
             tune_func = tune.with_resources(tune.with_parameters(cls.train, data=data), resources={"gpu": 1})
@@ -214,10 +216,7 @@ class SklearnTrainer:
                                   verbose=get_air_verbosity(AirVerbosity.DEFAULT),
                                   log_to_file=False, storage_path=TEMP_DIR+'/tune/',
                                   checkpoint_config=False,
-                                  callbacks=[RayReport(params['user_id'], params['algo_id'],
-                                                       params['exper_id'], params['trials'],
-                                                       params['tune_param']['epochs'],
-                                                       params.get('metrics'))])
+                                  callbacks=[progressRpt])
 
         tuner = tune.Tuner(trainable=tune_func,
                            tune_config=tune_cfg,
@@ -229,8 +228,8 @@ class SklearnTrainer:
             result = tuner.fit()
         except RayError as e:
             print(e)
-            report = {'userId': params['user_id'],
-                      'payload': {'code': RAY_JOB_EXCEPTION, 'msg': 'tuner.fit exception',
-                                  'data': {'algoId': params['algo_id'], 'experId': params['exper_id']}}}
-            # report['payload']['data']['detail'] = e
-            RedisClient().feedback(report)
+            # report exception
+            progressRpt.experimentException(e)
+        else:
+            # report progress
+            progressRpt.experimentProgress(JOB_PROGRESS_END)

@@ -1,6 +1,8 @@
 import json
 import redis
 import pandas as pd
+
+from config.development import REDIS_STREAM_UP
 from config.settings import REDIS_CHANNEL_FEEDBACK
 
 
@@ -32,3 +34,6 @@ class RedisClient:
     # feedback to redis channel
     def feedback(self, json_data):
         self.redis.publish(REDIS_CHANNEL_FEEDBACK, json.dumps(json_data))
+
+    def notify(self, json_data):
+        self.redis.xadd(REDIS_STREAM_UP, {'msg': json.dumps(json_data)})

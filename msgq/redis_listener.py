@@ -1,7 +1,7 @@
 import time
 from threading import Thread
 import redis
-from config.settings import REDIS_STREAM_NAME, REDIS_CONSUMER_GROUP, REDIS_CONSUMER_NAME, REDIS_CHANNEL_FEEDBACK
+from config.settings import REDIS_STREAM_DOWN, REDIS_CONSUMER_GROUP, REDIS_CONSUMER_NAME, REDIS_CHANNEL_FEEDBACK
 import json
 
 class RedisListener(object):
@@ -10,11 +10,11 @@ class RedisListener(object):
 
         try:
             # get stream info
-            sinfo = self.redis.xinfo_stream(REDIS_STREAM_NAME)
+            sinfo = self.redis.xinfo_stream(REDIS_STREAM_DOWN)
             # print(sinfo)
         except Exception:
             # create stream if it doesn't exist
-            self.redis.xgroup_create(REDIS_STREAM_NAME, REDIS_CONSUMER_GROUP, id='$', mkstream=True)
+            self.redis.xgroup_create(REDIS_STREAM_DOWN, REDIS_CONSUMER_GROUP, id='$', mkstream=True)
             pass
 
         self.thread = Thread(target=self.loop_consuming, daemon=True)
@@ -22,7 +22,7 @@ class RedisListener(object):
 
     def loop_consuming(self):
         while True:
-            self.consume(REDIS_STREAM_NAME, REDIS_CONSUMER_GROUP, REDIS_CONSUMER_NAME, target=self.msg_handler)
+            self.consume(REDIS_STREAM_DOWN, REDIS_CONSUMER_GROUP, REDIS_CONSUMER_NAME, target=self.msg_handler)
 
     def consume(self, stream_name, consumer_group, consumer_name, target=None):
         message = self.redis.xreadgroup(consumer_group, consumer_name, {stream_name: '>'}, block=0, count=1)

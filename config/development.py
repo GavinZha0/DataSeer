@@ -21,9 +21,11 @@ REDIS_HOST = '127.0.0.1'
 REDIS_PORT = 6379
 REDIS_DB = 0
 # used to receive task
-REDIS_STREAM_NAME = "HUDSON"
+REDIS_STREAM_DOWN = "downstream"
+# used to send msg to commander
+REDIS_STREAM_UP = "upstream"
 # local consumer group
-REDIS_CONSUMER_GROUP = "NYC"
+REDIS_CONSUMER_GROUP = "nyc"
 # unique consumer name
 REDIS_CONSUMER_NAME = "nyc_01"
 # used to report task status and result
@@ -41,7 +43,7 @@ MONGO_DB_URL = f"mongodb://username:password@127.0.0.1:27017/?authSource={MONGO_
 """
 AWS S3 config
 """
-AWS_S3_ENDPOINT = "https://s3.us-east-2.amazonaws.com"
-AWS_S3_ACCESS_ID = "AKIAYSIQQG2SQMGUGNJK"
-AWS_S3_SECRET_KEY = "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"
+AWS_S3_ENDPOINT = ""
+AWS_S3_ACCESS_ID = ""
+AWS_S3_SECRET_KEY = ""
 AWS_S3_BUCKET = "datapie"
