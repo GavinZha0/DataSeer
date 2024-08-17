@@ -1,3 +1,4 @@
+import os.path
 import string
 
 from config.settings import TEMP_DIR
@@ -93,9 +94,12 @@ async def build_ray_trainable(framework: str, code: str, params: dict):
 
     try:
         # save trainable class to local file
+        if os.path.exists(f'{TEMP_DIR}/ml/') is False:
+            os.mkdir(f'{TEMP_DIR}/ml/')
         with open(f'{TEMP_DIR}/ml/{params["module_name"]}.py', 'w') as file:
             file.write(trainable_code)
-    except:
+    except Exception as e:
+        print(e)
         return False
 
     return True

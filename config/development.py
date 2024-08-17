@@ -8,9 +8,9 @@
 Database config
 """
 # main database of DataPie
-SQLALCHEMY_DATABASE_URL = "mysql+asyncmy://admin:admin520@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/datapie"
+SQLALCHEMY_DATABASE_URL = "mysql+asyncmy://username:password@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/datapie"
 # mlflow db to track ML lifecycle
-SQLALCHEMY_MLFLOW_DB_URL = "mysql+pymysql://admin:admin520@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/mlflow"
+SQLALCHEMY_MLFLOW_DB_URL = "mysql+pymysql://username:username@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/mlflow"
 
 """
 Redis config

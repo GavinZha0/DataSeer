@@ -12,25 +12,26 @@ RAY_JOB_EXCEPTION = 5
 JOB_PROGRESS_START = 1
 JOB_PROGRESS_END = 100
 
+
 class RayReport(Callback):
-    def __init__(self, user_id, algo_id, exper_id, num_trials, num_epochs, metrics):
-        self.user = user_id
-        self.algo = algo_id
-        self.exper = exper_id
-        self.metrics = metrics
+    def __init__(self, params: list):
+        self.user = params.get('user_id')
+        self.algo = params.get('algo_id')
+        self.name = params.get('algo_name')
+        self.exper = params.get('exper_id')
+        self.metrics = params.get('metrics')
         self.now = datetime.now()
         self.completed_trials = 0
-        self.total_trials = num_trials
+        self.total_trials = params.get('trials')
         self.completed_epochs = 0
-        self.total_epochs = num_trials * num_epochs
+        self.total_epochs = params.get('trials') * params.get('epochs')
 
     # start a new experiment
     # use experimentProgress to report START
     def setup_X(self, stop, num_samples, total_num_samples, **info):
-        # status 1: experiment start
-        report = {'userId': self.user, 'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'progress': 1}
-        report['payload']['data'] = payload_data
+        # progress 1: experiment start
+        report = dict(uid=self.user, code=RAY_EXPERIMENT_REPORT, msg='',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=1))
         RedisClient().feedback(report)
         RedisClient().notify(report)
 
@@ -40,9 +41,8 @@ class RayReport(Callback):
         interval = datetime.now() - self.now
         if iteration % 10 == 0 or interval.total_seconds() > 30:
             self.now = datetime.now()
-            report = {'userId': self.user, 'payload': {'code': RAY_STEP_REPORT, 'msg': '', 'data': {}}}
-            payload_data = {'algoId': self.algo, 'experId': self.exper, 'step': iteration//10}
-            report['payload']['data'] = payload_data
+            report = dict(uid=self.user, code=RAY_STEP_REPORT, msg='',
+                          data=dict(name=self.name, algoId=self.algo, experId=self.exper, step=iteration // 10))
             print(report)
             RedisClient().feedback(report)
             RedisClient().notify(report)
@@ -52,23 +52,21 @@ class RayReport(Callback):
     # so training_iteration = epoch
     # per epoch
     def on_trial_result(self, iteration, trials, trial, result, **info):
-        print(f'...{iteration}')
         self.completed_epochs += 1
-        progress = round(self.completed_epochs / self.total_epochs, 2)*100
-        report = {'userId': self.user, 'payload': {'code': RAY_EPOCH_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'trialId': trial.trial_id,
-                        'epoch': result.get('training_iteration'), 'progress': progress,
-                        'params': trial.evaluated_params}
-        report['payload']['data'] = payload_data
+        progress = round(self.completed_epochs / self.total_epochs, 2)
+        report = dict(uid=self.user, code=RAY_EPOCH_REPORT, msg='',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id, progress=progress,
+                                epoch=result.get('training_iteration'), params=trial.evaluated_params))
+        report_data = report['data']
 
         if result.get('time_total_s'):
-            payload_data['duration'] = math.ceil(result.get('time_total_s'))
+            report_data['duration'] = math.ceil(result.get('time_total_s'))
 
         evaluation: dict = {}
         if self.metrics:
             for kpi_name in self.metrics:
                 evaluation[kpi_name] = result.get(kpi_name)
-            payload_data['eval'] = evaluation
+            report_data['eval'] = evaluation
 
         print(report)
         RedisClient().feedback(report)
@@ -77,19 +75,18 @@ class RayReport(Callback):
     # per trial
     def on_trial_complete(self, iteration, trials, trial, **info):
         self.completed_trials += 1
-        progress = round(self.completed_trials/self.total_trials, 2)
-        report = {'userId': self.user, 'payload': {'code': RAY_TRIAL_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'trialId': trial.trial_id,
-                        'params': trial.evaluated_params,
-                        'duration': math.ceil(trial.last_result.get('time_total_s')),
-                        'progress': progress}
-        report['payload']['data'] = payload_data
+        progress = round(self.completed_trials / self.total_trials, 2)
+        report = dict(uid=self.user, code=RAY_TRIAL_REPORT, msg='',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id,
+                                params=trial.evaluated_params, progress=progress,
+                                duration=math.ceil(trial.last_result.get('time_total_s'))))
+        report_data = report['data']
 
         evaluation: dict = {}
         if self.metrics:
             for kpi_name in self.metrics:
                 evaluation[kpi_name] = trial.last_result.get(kpi_name)
-            payload_data['eval'] = evaluation
+            report_data['eval'] = evaluation
 
         print(report)
         # RedisClient().feedback(report)
@@ -98,13 +95,13 @@ class RayReport(Callback):
     # per experiment
     # use experimentProgress to report end
     def on_experiment_end(self, trials, **info):
-        # status 0: experiment end
-        report = {'userId': self.user, 'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'progress': 100, 'trials': []}
-        report['payload']['data'] = payload_data
+        # progress 100: experiment end
+        report = dict(uid=self.user, code=RAY_EXPERIMENT_REPORT, msg='',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=100, trials=[]))
+        report_data = report['data']
 
         for trial in trials:
-            trial_info = {'id': trial.trial_id, 'params': trial.evaluated_params, 'eval': {}}
+            trial_info = dict(id=trial.trial_id, params=trial.evaluated_params, eval={})
             if trial.get_error():
                 trial_info['error'] = trial.get_error()
 
@@ -113,22 +110,21 @@ class RayReport(Callback):
                 for kpi_name in self.metrics:
                     evaluation[kpi_name] = trial.last_result.get(kpi_name)
                 trial_info['eval'] = evaluation
-            payload_data['trials'].append(trial_info)
+            report_data['trials'].append(trial_info)
         print(report)
         # RedisClient().feedback(report)
         # RedisClient().notify(report)
 
     def experimentProgress(self, progress: int):
-        # status 1: experiment start
-        report = {'userId': self.user, 'payload': {'code': RAY_EXPERIMENT_REPORT, 'msg': '', 'data': {}}}
-        payload_data = {'algoId': self.algo, 'experId': self.exper, 'progress': progress}
-        report['payload']['data'] = payload_data
+        # progress 1: experiment start
+        # progress 100: experiment end
+        report = dict(uid=self.user, code=RAY_EXPERIMENT_REPORT, msg='',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=progress))
         RedisClient().feedback(report)
         RedisClient().notify(report)
 
     def experimentException(self, exception: str):
-        report = {'userId': self.user,
-                  'payload': {'code': RAY_JOB_EXCEPTION, 'msg': 'tuner.fit exception', 'data': {}}}
-        report['payload']['data'] = {'algoId': self.algo, 'experId': self.exper, 'detail': exception}
+        report = dict(uid=self.user, code=RAY_JOB_EXCEPTION, msg='tuner.fit exception',
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, detail=exception))
         RedisClient().feedback(report)
         RedisClient().notify(report)

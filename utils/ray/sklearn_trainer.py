@@ -186,19 +186,17 @@ class SklearnTrainer:
         os.environ['RAY_AIR_NEW_OUTPUT'] = '0'
 
         # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
-        exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'],
-                      'algo_name': params['algo_name'], 'user_id': params['user_id'], 'args': '|'.join(params['args'])}
+        exper_tags = dict(org_id=params['org_id'], algo_id=params['algo_id'], algo_name=params['algo_name'],
+                          user_id=params['user_id'], args='|'.join(params['args']))
         params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
                                                       artifact_location=params['artifact_location'])
-
         params['tune_param']['exper_id'] = params['exper_id']
         # resolve the warning 'Matplotlib GUI outside of the main thread will likely fail'
         # matplotlib.use('agg')
         # mlflow.autolog()
 
         # create progress report
-        progressRpt = RayReport(params['user_id'], params['algo_id'], params['exper_id'], params['trials'],
-                                params['tune_param']['epochs'], params.get('metrics'))
+        progressRpt = RayReport(params)
         progressRpt.experimentProgress(JOB_PROGRESS_START)
 
         if params.get('gpu') == True:

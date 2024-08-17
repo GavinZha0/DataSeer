@@ -161,7 +161,7 @@ async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAut
 async def execute_algo(req: schema.AlgoExeParam, auth: Auth = Depends(AllUserAuth())):
     result = await train_pipeline(req.id, auth.db, auth.user)
     if result is False:
-        return ErrorResponse()
+        return ErrorResponse('Failed to execute algo training')
     else:
         return SuccessResponse()
 

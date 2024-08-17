@@ -74,8 +74,8 @@ class PyTorchTrainer:
         params['tune_param']['dist'] = True
 
         # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
-        exper_tags = {'org_id': params['org_id'], 'algo_id': params['algo_id'],
-                      'algo_name': params['algo_name'], 'user_id': params['user_id'], 'args': '|'.join(params['args'])}
+        exper_tags = dict(org_id=params['org_id'], algo_id=params['algo_id'], algo_name=params['algo_name'],
+                          user_id=params['user_id'], args='|'.join(params['args']))
         params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
                                                       artifact_location=params['artifact_location'])
 
@@ -86,8 +86,7 @@ class PyTorchTrainer:
         # mlflow.autolog()
 
         # create progress report
-        progressRpt = RayReport(params['user_id'], params['algo_id'], params['exper_id'], params['trials'],
-                                params['tune_param']['epochs'], params.get('metrics'))
+        progressRpt = RayReport(params)
         progressRpt.experimentProgress(JOB_PROGRESS_START)
 
         # Configure computation resources
@@ -105,7 +104,8 @@ class PyTorchTrainer:
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3))
         run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
-                                  checkpoint_config=False, log_to_file=False, storage_path=TEMP_DIR+'/tune/')
+                                  checkpoint_config=False, log_to_file=False, storage_path=TEMP_DIR+'/tune/',
+                                  callbacks=[progressRpt])
 
         tuner = tune.Tuner(trainable=trainer,
                            tune_config=tune_cfg,

@@ -20,10 +20,11 @@ from sklearn import feature_extraction as fe
 from utils.ray.sklearn_trainer import SklearnTrainer
 from utils.ray.pytorch_trainer import PyTorchTrainer
 
-
 """
 return pandas dataframe
 """
+
+
 async def extract_data(dataset_id: int, db: AsyncSession):
     # get dataset and datasource info
     dataset_info = await ml_crud.DatasetDal(db).get_data(dataset_id, v_ret=RET.SCHEMA)
@@ -37,9 +38,12 @@ async def extract_data(dataset_id: int, db: AsyncSession):
     dataframe, total = await db.db_query(dataset_info.query, None, dataset_info.variable)
     return dataframe, dataset_info.fields, dataset_info.transform
 
+
 """
 transform data
 """
+
+
 async def transform_data(df: pd.DataFrame, fields, transform):
     for it in fields:
         if it.get('omit'):
@@ -128,7 +132,8 @@ async def transform_data(df: pd.DataFrame, fields, transform):
             case 'binary':  # Binary
                 df[field_name] = pp.Binarizer(threshold=1).fit_transform(df[field_name])
             case 'bins':  # Binning
-                df[field_name] = pp.KBinsDiscretizer(n_bins=10, strategy='uniform', encode='ordinal').fit_transform(df[field_name])
+                df[field_name] = pp.KBinsDiscretizer(n_bins=10, strategy='uniform', encode='ordinal').fit_transform(
+                    df[field_name])
             case 'count':  # Count Encode
                 df[field_name] = pp.LabelEncoder().fit_transform(df[field_name])
             case 'mean':  # Mean Encode
@@ -169,6 +174,8 @@ framework: sklearn, pytorch, tensorflow
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
 pytorch category: vision, 
 """
+
+
 def extract_existing_datasets(framework: str, category: str):
     dataset_list = list(torchvision.datasets.__all__)
     # imagenet_data = torchvision.datasets.KMNIST('./', train=True, download=True)
@@ -181,6 +188,8 @@ framework: sklearn, pytorch, tensorflow
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
 pytorch category: vision, 
 """
+
+
 async def extract_existing_algos(framework: str, category: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
     result_tree = []
@@ -228,14 +237,14 @@ async def extract_existing_algos(framework: str, category: str):
                 # handle modules without '_' as second priority
                 if result.get(md) is not None:
                     # ex: 'vgg11'
-                    result[md].append(md+'_basic')
+                    result[md].append(md + '_basic')
                 else:
                     # end with digits
                     match = re.search(r"\d+$", md)
                     if match:
                         # ex: 'resnet101
                         m_cat = match.group()
-                        m_name = md[:0-len(m_cat)]
+                        m_name = md[:0 - len(m_cat)]
                         if result.get(m_name) is None:
                             result[m_name] = [md]
                         else:
@@ -256,7 +265,7 @@ async def extract_existing_algos(framework: str, category: str):
                     new_name = result[m_name][0]
                     if result.get(new_name):
                         # add to existing module as basic cat if new_name exists
-                        result[new_name].append(new_name+'_basic')
+                        result[new_name].append(new_name + '_basic')
                     else:
                         del_list.append(m_name)
                         add_list.append(new_name)
@@ -283,6 +292,8 @@ async def extract_existing_algos(framework: str, category: str):
 """
 build train pipeline
 """
+
+
 async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     # get algo, dataset and datasource info from db
     algo_info = await ml_crud.AlgoDal(db).get_data(algo_id, v_ret=RET.SCHEMA)
@@ -310,7 +321,8 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
         # get dataset from datasource
         dataset_df = trainer.extract.remote(dataset_info.query)
         # transform data based on field config of dataset
-        train_eval_data = trainer.transform.remote(dataset_df, dataset_info.fields, algo_info.dataCfg['evalRatio'], algo_info.dataCfg['shuffle'])
+        train_eval_data = trainer.transform.remote(dataset_df, dataset_info.fields, algo_info.dataCfg['evalRatio'],
+                                                   algo_info.dataCfg['shuffle'])
         trainer.train.remote(params, train_cls, train_eval_data)
     elif algo_info.framework == 'pytorch':
         # initialize TorchTrainer to create data engine
@@ -325,6 +337,8 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
 """
 build parameters for train
 """
+
+
 async def build_params(algo: ml_schema.Algo, user: dict):
     now_ts = int(datetime.now().timestamp())
     # basic parameters
@@ -332,20 +346,20 @@ async def build_params(algo: ml_schema.Algo, user: dict):
     # use AWS S3 as file store
     # an experiment binds to an algo, experiment name is unique
     # every run has user info
-    params: dict = {'algo_id': algo.id,
-                    'algo_name': algo.name,
-                    'user_id': user.id,
-                    'user_name': user.name,
-                    'org_id': user.oid,
-                    'module_name': f"algo_{algo.id}",
-                    'tracking_url': settings.SQLALCHEMY_MLFLOW_DB_URL,
-                    's3_url': settings.AWS_S3_ENDPOINT,
-                    's3_id': settings.AWS_S3_ACCESS_ID,
-                    's3_key': settings.AWS_S3_SECRET_KEY,
-                    'artifact_location': f"s3://datapie-{algo.orgId}/ml/algo_{algo.id}",
-                    'exper_name': f"algo_{algo.id}_{now_ts}",
-                    'tune_param': {'user_id': user.id, 'epochs': 1, 'tracking_url': settings.SQLALCHEMY_MLFLOW_DB_URL}
-                    }
+    params = dict(algo_id=algo.id,
+                  algo_name=algo.name,
+                  user_id=user.id,
+                  user_name=user.name,
+                  org_id=user.oid,
+                  module_name=f"algo_{algo.id}",
+                  tracking_url=settings.SQLALCHEMY_MLFLOW_DB_URL,
+                  s3_url=settings.AWS_S3_ENDPOINT,
+                  s3_id=settings.AWS_S3_ACCESS_ID,
+                  s3_key=settings.AWS_S3_SECRET_KEY,
+                  artifact_location=f"s3://datapie-{algo.orgId}/ml/algo_{algo.id}",
+                  exper_name=f"algo_{algo.id}_{now_ts}",
+                  tune_param=dict(user_id=user.id, epochs=1, tracking_url=settings.SQLALCHEMY_MLFLOW_DB_URL)
+                  )
 
     # get custom class name from srcCode
     cls_idx = algo.srcCode.find('class ')
@@ -364,9 +378,9 @@ async def build_params(algo: ml_schema.Algo, user: dict):
         params['gpu'] = algo.trainCfg.get('gpu', False)
         params['trials'] = algo.trainCfg.get('trials', 1)
         params['timeout'] = algo.trainCfg.get('timeout')
+        params['epochs'] = algo.trainCfg.get('epochs', 1)
         # tune parameters
         tuner['epochs'] = algo.trainCfg.get('epochs', 1)
-        # tuner['lr'] = ray.tune.choice([0.001, 0.005, 0.01])
 
         # search space based on parameters
         if algo.trainCfg.get('params'):
@@ -382,11 +396,11 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                         if '.' in value:
                             # convert to float if one of value is float
                             tuner[search_param['name']] = ray.tune.quniform(float(values[0]), float(values[1]),
-                                                                             float(values[2]))
+                                                                            float(values[2]))
                         else:
                             # convert to integer
                             tuner[search_param['name']] = ray.tune.qrandint(int(values[0]), int(values[1]),
-                                                                             int(values[2]))
+                                                                            int(values[2]))
                     elif values.length > 1:
                         # ex: (2.8, 9.5)
                         if '.' in value:
@@ -415,7 +429,8 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                     if '.' in search_param['value']:
                         tuner[search_param['name']] = float(search_param['value'])
                     else:
-                        tuner[search_param['name']] = int(search_param['value']) if search_param['value'].isdigit() else search_param['value']
+                        tuner[search_param['name']] = int(search_param['value']) if search_param['value'].isdigit() else \
+                        search_param['value']
 
         # early stop based on metrics
         if algo.trainCfg.get('metrics'):
@@ -429,4 +444,3 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                 params['stop'] = early_stop
 
     return params
-
