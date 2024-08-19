@@ -12,30 +12,26 @@ sklearn_setup_mlflow = '''
 
 sklearn_tpl = string.Template('''
 import ray
-from ray.air.integrations.mlflow import setup_mlflow
-from sklearn.ensemble import ${SKCLASS}
-from sklearn.metrics import accuracy_score
+import mlflow
+import matplotlib
+from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME, MLFLOW_USER
+from sklearn.{MODULE} import {ALGORITHM}
+from sklearn import metrics
 
 # for sklearn algo
-class CustomAlgo:
-    def train(config: dict):
-        setup_mlflow(
-            config,
-            experiment_id=config.get("experiment_id", None),
-            experiment_name=config.get("experiment_name", None),
-            tracking_uri=config.get("tracking_uri", None),
-            artifact_location=config.get("artifact_location", None),
-            create_experiment_if_not_exists=True,
-            run_name=config.get("run_name", None),
-            tags=config.get("tags", None)
-        )
+class CustomTrain:
+    def train(config: dict, data: dict):
+        mlflow.set_tracking_uri(config.get('tracking_url'))
+        mlflow.set_experiment(experiment_id=config.get('exper_id'))
+        mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
+        matplotlib.use('agg')
 
-        model = ${ALGO}(${ARGS})
+        estimator = {ALGORITHM}({PARAMS})
         for epoch in range(config.get("epochs", 1)):
-            model.fit(config['x'], config['y'])
-            y_predict = model.predict(config['x'])
-            acc = accuracy_score(config['y'], y_predict)
-            ray.train.report({'acc': acc})
+            estimator.fit(data['x'], data['y'])
+            {SCORE_NAME}_fn = metrics.get_scorer('{SCORE_NAME}')
+            {SCORE_NAME} = {SCORE_NAME}_fn(estimator, data['x'], data['y'])
+            ray.train.report({"{SCORE_NAME}": {SCORE_NAME}})
 ''')
 
 pytorch_tpl = string.Template('''

@@ -3,6 +3,7 @@ import operator
 import re
 from datetime import datetime
 import importlib
+import execjs
 import pandas as pd
 import ray
 import torchvision
@@ -10,7 +11,6 @@ from pandas import CategoricalDtype
 from sqlalchemy.ext.asyncio import AsyncSession
 from apps.ml.algo.algo_trainable import build_ray_trainable
 from config import settings
-from config.settings import TEMP_DIR
 from core.crud import RET
 from utils.db_executor import DbExecutor
 from apps.datamgr import crud as dm_crud
@@ -19,6 +19,9 @@ from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
 from utils.ray.sklearn_trainer import SklearnTrainer
 from utils.ray.pytorch_trainer import PyTorchTrainer
+import inspect
+import ast
+
 
 """
 return pandas dataframe
@@ -190,9 +193,8 @@ pytorch category: vision,
 """
 
 
-async def extract_existing_algos(framework: str, category: str):
+async def extract_algos(framework: str, category: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
-    result_tree = []
     result = {}
     match framework:
         case 'sklearn':
@@ -201,17 +203,12 @@ async def extract_existing_algos(framework: str, category: str):
             for name, class_ in estimators:
                 m_name = class_.__dict__.get('__module__').split(".")[1]
                 cls_name = class_.__name__
-                if result.get(m_name) is None:
-                    result[m_name] = [cls_name]
-                else:
-                    result[m_name].append(cls_name)
+                if m_name != 'dummy':
+                    if result.get(m_name) is None:
+                        result[m_name] = [cls_name]
+                    else:
+                        result[m_name].append(cls_name)
 
-            for m_name in result:
-                result_tree.append({'name': m_name, 'children': []})
-                if len(result[m_name]) > 0:
-                    result_tree[-1]['selectable'] = False
-                for cls_name in result[m_name]:
-                    result_tree[-1]['children'].append({'name': cls_name})
         case 'pytorch':
             import torch
             models = torch.hub.list(f'pytorch/{category}')
@@ -276,18 +273,78 @@ async def extract_existing_algos(framework: str, category: str):
             result['ungrouped'] = []
             [result['ungrouped'].append(k) for k in add_list]
 
-            # sort result
-            sorted_result = dict(sorted(result.items(), key=operator.itemgetter(0)))
-            # build tree
-            for m_name in sorted_result:
-                result_tree.append({'name': m_name, 'children': []})
-                if len(sorted_result[m_name]) > 0:
-                    result_tree[-1]['selectable'] = False
-                for sub_name in sorted_result[m_name]:
-                    result_tree[-1]['children'].append({'name': sub_name})
+    # sort result
+    result_json = dict(sorted(result.items(), key=operator.itemgetter(0)))
+    return result_json
 
-    return result_tree
 
+"""
+extract arguments of algorithm
+framework: sklearn, pytorch, tensorflow
+sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
+pytorch category: vision, 
+"""
+async def extract_algo_args(framework: str, category: str, algo: str):
+    category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
+    args = []
+    from sklearn.utils import all_estimators
+    estimators = all_estimators(type_filter='classifier')
+    match framework:
+        case 'sklearn':
+            # find algo func from sklearn estimators
+            from sklearn.utils import all_estimators
+            estimators = all_estimators(type_filter=category_map[category])
+            algo_func = [class_ for name, class_ in estimators if name == algo]
+            if algo_func:
+                # can be ignored arguments
+                ignored = ['estimator', 'verbose', 'n_jobs', 'random_state', 'max_iter']
+                # get arg names and default values of the algo
+                params = inspect.signature(algo_func[0])
+                args = [dict(name=it.name, default=it.default) for it in list(params.parameters.values())
+                        if (not inspect.isclass(it.default)) and (it.name not in ignored)]
+            else:
+                return []
+
+            # get the doc of algo function
+            algo_doc = algo_func[0].__doc__
+            for it in args:
+                # find description of the algo
+                # ex: criterion : {"gini", "entropy", "log_loss"}, default="gini"
+                idx = algo_doc.find(it["name"] + ' : {')
+                idz = algo_doc.find('}', idx)
+                if idx > 0 and idz > idx:
+                    # find options of the algo
+                    idy = algo_doc.find('{', idx)
+                    # remove unnecessary chars and convert to list
+                    tmp = algo_doc[idy + 1:idz].replace('"', '').replace(' ', '')
+                    it['options'] = tmp.split(',')
+    return args
+
+
+"""
+extract arguments of algorithm
+framework: sklearn, pytorch, tensorflow
+sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
+pytorch category: vision, 
+"""
+async def extract_algo_scores(framework: str, category: str):
+    category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
+    scores = dict(clf=[], reg=[], cluster=[])
+    match framework:
+        case 'sklearn':
+            from sklearn import metrics
+            names = metrics.get_scorer_names()
+            scores['cluster'] = [it for it in names if
+                              'rand_' in it or 'info_' in it or '_measure_' in it or 'homogeneity' in it
+                                or 'fowlkes' in it or 'completeness' in it]
+            scores['reg'] = [it for it in names if
+                          '_mean_' in it or '_variance' in it or '_error' in it or 'r2' in it or 'd2_' in it]
+            scores['clf'] = [it for it in names if it not in scores['cluster'] and it not in scores['reg']]
+        case 'pytorch':
+            scores['vision'] = []
+            scores['audio'] = []
+
+    return scores[category]
 
 """
 build train pipeline
@@ -313,7 +370,8 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     dy_module = importlib.import_module(f'temp.ml.{params["module_name"]}')
     train_cls = getattr(dy_module, 'CustomTrain')
     if params.get('cls_name'):
-        model_cls = getattr(dy_module, params['cls_name'])
+        print(params['cls_name'])
+        # model_cls = getattr(dy_module, params['cls_name'])
 
     if algo_info.framework == 'sklearn':
         # initialize RayUtils to create database connection
@@ -361,17 +419,8 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                   tune_param=dict(user_id=user.id, epochs=1, tracking_url=settings.SQLALCHEMY_MLFLOW_DB_URL)
                   )
 
-    # get custom class name from srcCode
-    cls_idx = algo.srcCode.find('class ')
-    train_idx = algo.srcCode.find('CustomTrain:')
-    if train_idx > cls_idx and train_idx - cls_idx < 10:
-        # first class is CustomTrain
-        cls_idx = algo.srcCode.find('class ', train_idx)
-    if cls_idx >= 0:
-        cls_name = algo.srcCode[cls_idx + 5:]
-        cls_idx = min(cls_name.index('('), cls_name.index(':'))
-        cls_name = cls_name[:cls_idx].strip()
-        params['cls_name'] = cls_name
+    # get model class name from srcCode
+    params['cls_name'] = [f.name for f in ast.parse(algo.srcCode).body if isinstance(f, ast.ClassDef)]
 
     tuner = params['tune_param']
     if algo.trainCfg:
@@ -379,68 +428,53 @@ async def build_params(algo: ml_schema.Algo, user: dict):
         params['trials'] = algo.trainCfg.get('trials', 1)
         params['timeout'] = algo.trainCfg.get('timeout')
         params['epochs'] = algo.trainCfg.get('epochs', 1)
+        params['score'] = algo.trainCfg.get('score', None)
+        params['threshold'] = algo.trainCfg.get('threshold', None)
+        if params['score'] and params['threshold']:
+            # early stop
+            params['stop'] = {params['score']: params['threshold']}
         # tune parameters
         tuner['epochs'] = algo.trainCfg.get('epochs', 1)
 
         # search space based on parameters
         if algo.trainCfg.get('params'):
             params['args']: list = []
-            for search_param in algo.trainCfg.get('params'):
-                params['args'].append(search_param['name'])
-                if search_param['value'].startswith('('):
+            search_space = algo.trainCfg.get('params')
+            for key, value in search_space.items():
+                params['args'].append(key)
+                if value.startswith('('):
                     # (start, stop, step)
-                    value = search_param['value'][1:-1].strip()
-                    values = value.split(',')
+                    # ex: (2, 10, 2)
+                    value_tmp = value.replace('(', '[').replace(')', ']')
+                    values = execjs.eval(value_tmp)
                     if len(values) > 2:
                         # ex: (2, 10, 2)
                         if '.' in value:
                             # convert to float if one of value is float
-                            tuner[search_param['name']] = ray.tune.quniform(float(values[0]), float(values[1]),
-                                                                            float(values[2]))
+                            tuner[key] = ray.tune.quniform(values[0], values[1], values[2])
                         else:
                             # convert to integer
-                            tuner[search_param['name']] = ray.tune.qrandint(int(values[0]), int(values[1]),
-                                                                            int(values[2]))
-                    elif values.length > 1:
+                            tuner[key] = ray.tune.qrandint(values[0], values[1], values[2])
+                    elif len(values) > 1:
                         # ex: (2.8, 9.5)
                         if '.' in value:
                             # convert to float if one of value is float
-                            tuner[search_param['name']] = ray.tune.uniform(float(values[0]), float(values[1]))
+                            tuner[key] = ray.tune.uniform(values[0], values[1])
                         else:
-                            tuner[search_param['name']] = ray.tune.randint(int(values[0]), int(values[1]))
-                    elif values.length > 0:
-                        # ex: (2)
-                        if '.' in value:
-                            tuner[search_param['name']] = float(values[0])
-                        else:
-                            tuner[search_param['name']] = int(values[0]) if values[0].isdigit() else values[0]
-                elif search_param['value'].startswith('['):
+                            tuner[key] = ray.tune.randint(values[0], values[1])
+                    elif len(values) > 0:
+                        tuner[key] = values[0]
+                elif value.startswith('['):
                     # ex: [linear, rbf]
-                    value = search_param['value'][1:-1].strip()
-                    values = value.split(',')
+                    values = execjs.eval(value)
                     if len(values) > 0:
-                        if '.' in value:
-                            converted_values = [float(val) for val in values]
-                        else:
-                            converted_values = [int(val) if val.isdigit() else val for val in values]
-                        tuner[search_param['name']] = ray.tune.choice(converted_values)
-                else:
-                    # 8.5
-                    if '.' in search_param['value']:
-                        tuner[search_param['name']] = float(search_param['value'])
-                    else:
-                        tuner[search_param['name']] = int(search_param['value']) if search_param['value'].isdigit() else \
-                        search_param['value']
+                        tuner[key] = ray.tune.choice(values)
 
-        # early stop based on metrics
-        if algo.trainCfg.get('metrics'):
-            params['metrics']: list = []
-            early_stop = {}
-            for eval_kpi in algo.trainCfg.get('metrics'):
-                params['metrics'].append(eval_kpi['name'])
-                if eval_kpi.get('value') is not None:
-                    early_stop[eval_kpi['name']] = float(eval_kpi['value'])
-            if len(early_stop) > 0:
-                params['stop'] = early_stop
+                else:
+                    # 8.5 or 'gini'
+                    if '.' in value:
+                        tuner[key] = float(value)
+                    else:
+                        tuner[key] = int(value) if value.isdigit() else value
 
     return params

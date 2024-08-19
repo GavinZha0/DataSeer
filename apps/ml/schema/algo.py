@@ -46,5 +46,11 @@ class AlgoGetParam(BaseModel):
     category: str = Field(..., title="Category")
 
 
+class AlgoGetArgsParam(BaseModel):
+    framework: str = Field(..., title="Framework")
+    category: str = Field(..., title="Category")
+    algo: str = Field(..., title="Algo name")
+
+
 class AlgoExeParam(BaseModel):
     id: int = Field(..., title="Algo id")

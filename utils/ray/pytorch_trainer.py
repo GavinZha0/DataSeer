@@ -52,7 +52,7 @@ class PyTorchTrainer:
         return {'train': self.trainset, 'eval': self.evalset}
 
     # train ML algo based on ray and mlflow
-    def train(self, params: dict, train_cls, data: Dict):
+    def train(self, params: dict, cls, data: Dict):
         # use AWS S3/minio as artifact repository
         os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
         os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')
@@ -93,7 +93,7 @@ class PyTorchTrainer:
         scaling_cfg = ScalingConfig(num_workers=1, use_gpu=True)
         torch_cfg = TorchConfig(backend="gloo")
         trainer = TorchTrainer(
-            train_loop_per_worker=train_cls.train,
+            train_loop_per_worker=cls.train,
             scaling_config=scaling_cfg,
             torch_config=torch_cfg
         )

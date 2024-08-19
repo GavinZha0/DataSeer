@@ -19,7 +19,7 @@ class RayReport(Callback):
         self.algo = params.get('algo_id')
         self.name = params.get('algo_name')
         self.exper = params.get('exper_id')
-        self.metrics = params.get('metrics')
+        self.score = params.get('score')
         self.now = datetime.now()
         self.completed_trials = 0
         self.total_trials = params.get('trials')
@@ -53,7 +53,7 @@ class RayReport(Callback):
     # per epoch
     def on_trial_result(self, iteration, trials, trial, result, **info):
         self.completed_epochs += 1
-        progress = round(self.completed_epochs / self.total_epochs, 2)
+        progress = round(self.completed_epochs / self.total_epochs, 2) * 100
         report = dict(uid=self.user, code=RAY_EPOCH_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id, progress=progress,
                                 epoch=result.get('training_iteration'), params=trial.evaluated_params))
@@ -62,11 +62,9 @@ class RayReport(Callback):
         if result.get('time_total_s'):
             report_data['duration'] = math.ceil(result.get('time_total_s'))
 
-        evaluation: dict = {}
-        if self.metrics:
-            for kpi_name in self.metrics:
-                evaluation[kpi_name] = result.get(kpi_name)
-            report_data['eval'] = evaluation
+        if self.score:
+            # user specified eval metrics
+            report_data['score'] = result.get(self.score)
 
         print(report)
         RedisClient().feedback(report)
@@ -75,18 +73,16 @@ class RayReport(Callback):
     # per trial
     def on_trial_complete(self, iteration, trials, trial, **info):
         self.completed_trials += 1
-        progress = round(self.completed_trials / self.total_trials, 2)
+        progress = round(self.completed_trials / self.total_trials, 2) * 100
         report = dict(uid=self.user, code=RAY_TRIAL_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id,
                                 params=trial.evaluated_params, progress=progress,
                                 duration=math.ceil(trial.last_result.get('time_total_s'))))
         report_data = report['data']
 
-        evaluation: dict = {}
-        if self.metrics:
-            for kpi_name in self.metrics:
-                evaluation[kpi_name] = trial.last_result.get(kpi_name)
-            report_data['eval'] = evaluation
+        if self.score:
+            # user specified eval metrics
+            report_data['score'] = trial.last_result.get(self.score)
 
         print(report)
         # RedisClient().feedback(report)
@@ -101,15 +97,13 @@ class RayReport(Callback):
         report_data = report['data']
 
         for trial in trials:
-            trial_info = dict(id=trial.trial_id, params=trial.evaluated_params, eval={})
+            trial_info = dict(id=trial.trial_id, params=trial.evaluated_params)
             if trial.get_error():
                 trial_info['error'] = trial.get_error()
 
-            evaluation: dict = {}
-            if self.metrics:
-                for kpi_name in self.metrics:
-                    evaluation[kpi_name] = trial.last_result.get(kpi_name)
-                trial_info['eval'] = evaluation
+            if self.score:
+                # user specified eval metrics
+                trial_info['score'] = trial.last_result.get(self.score)
             report_data['trials'].append(trial_info)
         print(report)
         # RedisClient().feedback(report)
