@@ -187,7 +187,10 @@ class SklearnTrainer:
 
         # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
         exper_tags = dict(org_id=params['org_id'], algo_id=params['algo_id'], algo_name=params['algo_name'],
-                          user_id=params['user_id'], args='|'.join(params['args']))
+                          user_id=params['user_id'])
+        if params.get('args'):
+            exper_tags['args'] = '|'.join(params['args'])
+
         params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
                                                       artifact_location=params['artifact_location'])
         params['tune_param']['exper_id'] = params['exper_id']
@@ -207,7 +210,7 @@ class SklearnTrainer:
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=1),
                                    scheduler=schedule.ASHAScheduler(mode="max"),
-                                   time_budget_s=params['timeout'] * 60 if params.get('timeout') else None)
+                                   time_budget_s=params['timeout'] * 60 * params['trials'] if params.get('timeout') else None)
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
         run_cfg = train.RunConfig(name=params['exper_name'],  stop=params.get('stop'),

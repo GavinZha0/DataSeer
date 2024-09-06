@@ -1,3 +1,4 @@
+import sys
 import base64
 import operator
 import re
@@ -6,6 +7,8 @@ import importlib
 import execjs
 import pandas as pd
 import ray
+import mlflow
+import torch
 import torchvision
 from pandas import CategoricalDtype
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +18,15 @@ from core.crud import RET
 from utils.db_executor import DbExecutor
 from apps.datamgr import crud as dm_crud
 from apps.ml import crud as ml_crud, schema as ml_schema
+import sklearn
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
+from sklearn import metrics
+from sklearn.utils import all_estimators
+import sklearn.datasets as skds
+import xgboost as xgb
+import lightgbm
+import lightning
 from utils.ray.sklearn_trainer import SklearnTrainer
 from utils.ray.pytorch_trainer import PyTorchTrainer
 import inspect
@@ -172,17 +182,34 @@ async def transform_data(df: pd.DataFrame, fields, transform):
 
 
 """
-extract existing algorithms
-framework: sklearn, pytorch, tensorflow
-sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
-pytorch category: vision, 
+extract framework versions
 """
+async def extract_frame_versions():
+    versions = dict(sklearn=sklearn.__version__, xgboost=xgb.__version__,
+                   lightgbm=lightgbm.__version__, lightning=lightning.__version__,
+                   ray=ray.__version__, mlflow=mlflow.__version__)
+    versions['python'] = sys.version.split('|')[0].strip()
+    versions['pytorch'] = torch.__version__.split('+')[0].strip()
+    return versions
 
 
-def extract_existing_datasets(framework: str, category: str):
-    dataset_list = list(torchvision.datasets.__all__)
+"""
+extract existing dataset
+sklearn and pytorch
+"""
+async def extract_ml_datasets():
+    all_set = []
+    sklearn_set = dict(id=-1, name='sklearn', children=[])
+    sklearn_set['children'] = [{"id": -100-k, "name": v} for k, v in enumerate(skds.__all__) if v.startswith('load') or v.startswith('fetch')]
+    all_set.append(sklearn_set)
+
+    torch_set = dict(id=-2, name='pytorch', children=[])
+    set_list = list(torchvision.datasets.__all__)
+    torch_set['children'] = [{"id": -200-k, "name": v} for k, v in enumerate(set_list)]
+    all_set.append(torch_set)
     # imagenet_data = torchvision.datasets.KMNIST('./', train=True, download=True)
     # yesno_data = torchaudio.datasets.YESNO('./', download=True)
+    return all_set
 
 
 """
@@ -191,14 +218,11 @@ framework: sklearn, pytorch, tensorflow
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
 pytorch category: vision, 
 """
-
-
 async def extract_algos(framework: str, category: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
     result = {}
     match framework:
         case 'sklearn':
-            from sklearn.utils import all_estimators
             estimators = all_estimators(type_filter=category_map[category])
             for name, class_ in estimators:
                 m_name = class_.__dict__.get('__module__').split(".")[1]
@@ -210,7 +234,6 @@ async def extract_algos(framework: str, category: str):
                         result[m_name].append(cls_name)
 
         case 'pytorch':
-            import torch
             models = torch.hub.list(f'pytorch/{category}')
             for md in models:
                 if md.startswith('get_') or md.find('_') < 0:
@@ -287,37 +310,41 @@ pytorch category: vision,
 async def extract_algo_args(framework: str, category: str, algo: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
     args = []
-    from sklearn.utils import all_estimators
-    estimators = all_estimators(type_filter='classifier')
     match framework:
         case 'sklearn':
             # find algo func from sklearn estimators
-            from sklearn.utils import all_estimators
+            # can be ignored arguments
+            ignored = ['estimator', 'verbose', 'n_jobs', 'random_state', 'max_iter']
             estimators = all_estimators(type_filter=category_map[category])
-            algo_func = [class_ for name, class_ in estimators if name == algo]
-            if algo_func:
-                # can be ignored arguments
-                ignored = ['estimator', 'verbose', 'n_jobs', 'random_state', 'max_iter']
-                # get arg names and default values of the algo
-                params = inspect.signature(algo_func[0])
-                args = [dict(name=it.name, default=it.default) for it in list(params.parameters.values())
-                        if (not inspect.isclass(it.default)) and (it.name not in ignored)]
-            else:
-                return []
+            algo_funcs = [class_ for name, class_ in estimators if name == algo]
+            algo_func = algo_funcs[0]
+        case 'pytorch':
+            # can be ignored arguments
+            ignored = ['kwargs']
+            algo_func = torchvision.models.get_model_builder(algo)
+        case 'default':
+            return []
 
-            # get the doc of algo function
-            algo_doc = algo_func[0].__doc__
-            for it in args:
-                # find description of the algo
-                # ex: criterion : {"gini", "entropy", "log_loss"}, default="gini"
-                idx = algo_doc.find(it["name"] + ' : {')
-                idz = algo_doc.find('}', idx)
-                if idx > 0 and idz > idx:
-                    # find options of the algo
-                    idy = algo_doc.find('{', idx)
-                    # remove unnecessary chars and convert to list
-                    tmp = algo_doc[idy + 1:idz].replace('"', '').replace(' ', '')
-                    it['options'] = tmp.split(',')
+    if algo_func:
+        # get arg names and default values of the algo
+        params = inspect.signature(algo_func)
+        args = [dict(name=it.name, default=it.default) for it in list(params.parameters.values())
+                    if (not inspect.isclass(it.default)) and (it.name not in ignored)]
+
+        # get options from doc of algo function
+        algo_doc = algo_func.__doc__
+        for it in args:
+            # find description of the algo
+            # ex: criterion : {"gini", "entropy", "log_loss"}, default="gini"
+            idx = algo_doc.find(it["name"] + ' : {')
+            idz = algo_doc.find('}', idx)
+            if idx > 0 and idz > idx:
+                # extract options of the algo
+                idy = algo_doc.find('{', idx)
+                # remove unnecessary chars and convert to list
+                tmp = algo_doc[idy + 1:idz].replace('"', '').replace(' ', '')
+                it['options'] = tmp.split(',')
+
     return args
 
 
@@ -329,14 +356,17 @@ pytorch category: vision,
 """
 async def extract_algo_scores(framework: str, category: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
+    # silhouette_score and calinski_harabasz_score can't get from get_scorer_names()
+    # they don't need target value to evaluate cluster. all others need.
     scores = dict(clf=[], reg=[], cluster=[])
     match framework:
         case 'sklearn':
-            from sklearn import metrics
             names = metrics.get_scorer_names()
             scores['cluster'] = [it for it in names if
                               'rand_' in it or 'info_' in it or '_measure_' in it or 'homogeneity' in it
                                 or 'fowlkes' in it or 'completeness' in it]
+            scores['cluster'].append('silhouette_score')
+            scores['cluster'].append('calinski_harabasz_score')
             scores['reg'] = [it for it in names if
                           '_mean_' in it or '_variance' in it or '_error' in it or 'r2' in it or 'd2_' in it]
             scores['clf'] = [it for it in names if it not in scores['cluster'] and it not in scores['reg']]
@@ -430,9 +460,18 @@ async def build_params(algo: ml_schema.Algo, user: dict):
         params['epochs'] = algo.trainCfg.get('epochs', 1)
         params['score'] = algo.trainCfg.get('score', None)
         params['threshold'] = algo.trainCfg.get('threshold', None)
+
+        # early stop
+        params['stop'] = dict()
+        if params['timeout']:
+            # timeout is minute per trial
+            # convert to second for early stop
+            # 'time_total_s' is fixed name of ray
+            params['stop']['time_total_s'] = params['timeout'] * 60
         if params['score'] and params['threshold']:
-            # early stop
-            params['stop'] = {params['score']: params['threshold']}
+            # These metrics are assumed to be increasing
+            params['stop'][params['score']] = params['threshold']
+
         # tune parameters
         tuner['epochs'] = algo.trainCfg.get('epochs', 1)
 

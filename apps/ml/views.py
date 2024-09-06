@@ -17,7 +17,9 @@ from apps.datamgr import crud as dm_crud
 from utils.response import SuccessResponse, ErrorResponse
 from apps.auth.token import Auth
 from itertools import groupby
-from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores
+from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores, \
+    extract_frame_versions, extract_ml_datasets
+from .dataset.dataset_main import buildin_dataset_load, get_dataset_info
 from .eda.eda_main import extract_data, transform_data, eda_build_chart
 import pandas as pd
 
@@ -61,6 +63,11 @@ async def get_dataset(req: schema.DatasetGetOne, auth: Auth = Depends(AllUserAut
     data = await crud.DatasetDal(auth.db).get_data(req.id, v_ret=RET.DUMP, v_where=[model.Dataset.org_id == auth.user.oid])
     return SuccessResponse(data)
 
+@app.post("/dataset/extract", summary="Extract Build-in Datasets")
+async def extract_buildin_dataset(auth: Auth = Depends(AllUserAuth())):
+    data = await extract_ml_datasets()
+    return SuccessResponse(data)
+
 
 @app.post("/dataset/execute", summary="Exe Ml Dataset")
 async def get_dataset(dataset_id: int, auth: Auth = Depends(AllUserAuth())):
@@ -69,30 +76,22 @@ async def get_dataset(dataset_id: int, auth: Auth = Depends(AllUserAuth())):
 
 @app.post("/dataset/stat", summary="Get dataset stat")
 async def get_dataset_stat(req: schema.DatasetGetStat, auth: Auth = Depends(AllUserAuth())):
-    src_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id, v_where=[dm_models.Datasource.org_id == auth.user.oid])
-    passport = src_info.username + ':' + base64.b64decode(src_info.password).decode('utf-8')
-    # get data from db
-    db = DbExecutor(src_info.type, src_info.url, passport, src_info.params)
-    df, total = await db.db_query(req.sql, None, req.variable)
+    df: pd.dataframe = None
 
-    # convert datetime fields to string
-    ts_col = df.select_dtypes(include='datetime').columns.tolist()
-    if ts_col is not None:
-        for col in ts_col:
-            df[col] = df[col].dt.strftime('%m/%d/%Y %H:%M:%S')
+    if req.id > 0:
+        src_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id, v_where=[dm_models.Datasource.org_id == auth.user.oid])
+        passport = src_info.username + ':' + base64.b64decode(src_info.password).decode('utf-8')
+        # get data from db
+        db = DbExecutor(src_info.type, src_info.url, passport, src_info.params)
+        df, total = await db.db_query(req.sql, None, req.variable)
+    else:
+        df, total = await buildin_dataset_load(req.sql, None, req.variable)
 
-    # get stat info
-    stat = df.describe(include='all').T
-    stat['type'] = [it.name for it in df.dtypes]
-    stat['missing'] = df.isnull().sum().values
-    stat_var = df.var(numeric_only=True).to_frame('variance')
-    stat = pd.merge(stat, stat_var, left_index=True, right_index=True, how='outer')
-    stat = stat.reset_index().rename(columns={"index": "name", "25%": "pct25", "50%": "median", "75%": "pct75"})
-    stat = stat.round(3)
+    if df is None:
+        return SuccessResponse({'total': 0, 'records': [], 'stat': {}})
 
-    if req.limit:
-        df = df.head(req.limit)
-    return SuccessResponse({'total': total, 'records': df.to_dict(orient='records'), 'stat': stat.to_dict(orient='records')})
+    data, stat = await get_dataset_info(req.type, req.sql, df, total, req.limit)
+    return SuccessResponse({'total': total, 'records': data, 'stat': stat})
 
 
 ###########################################################
@@ -151,11 +150,16 @@ async def get_algo(algo_id: int, auth: Auth = Depends(AllUserAuth())):
     return SuccessResponse(data)
 
 
+@app.post("/algo/vers", summary="Get framework versions")
+async def get_versions(auth: Auth = Depends(AllUserAuth())):
+    ver_json = await extract_frame_versions()
+    return SuccessResponse(ver_json)
+
+
 @app.post("/algo/algos", summary="Get Existing algos")
 async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAuth())):
     algo_json = await extract_algos(params.framework, params.category)
     return SuccessResponse(algo_json)
-
 
 @app.post("/algo/args", summary="Get algo args")
 async def get_args(params: schema.AlgoGetArgsParam, auth: Auth = Depends(AllUserAuth())):

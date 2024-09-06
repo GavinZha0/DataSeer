@@ -9,6 +9,7 @@ import base64
 from itertools import groupby
 from operator import itemgetter
 
+import sklearn
 import torchaudio
 import torchvision
 from fastapi import APIRouter, Depends
@@ -77,28 +78,31 @@ async def get_datasource_sets(p: param.SrcTableParams = Depends(), auth: Auth = 
 
 @app.post("/datasource/sets", summary="Get Datasource sets")
 async def get_datasource_sets(req: schema.DatasourceSets, auth: Auth = Depends(AllUserAuth())):
-    src_info = await crud.DatasourceDal(auth.db).get_data(req.id, v_where=[model.Datasource.org_id == auth.user.oid])
-    response = {}
-    if src_info is None:
-        return SuccessResponse(response)
+    if req.id >0:
+        src_info = await crud.DatasourceDal(auth.db).get_data(req.id, v_where=[model.Datasource.org_id == auth.user.oid])
+        return []
+    else:
+        all_set = []
+        sklearn_set = dict(id=-1, name='sklearn', selectable=False, children=[])
+        set_list = sklearn.datasets.__all__
+        set_list.sort()
+        sklearn_set['children'] = [{"id": -100 - k, "name": v} for k, v in enumerate(set_list) if
+                                       v.startswith('load') or v.startswith('fetch')]
+        all_set.append(sklearn_set)
 
-    if src_info.type == 'datahub':
-        cat = src_info.url.split('/')[-1]
-        match cat:
-            case 'pytorch':
-                audioset = list(torchaudio.datasets.__all__)
-                audioset.sort()
-                audio_tree = {'id': 1, 'name': 'audio', 'selectable': False,
-                              'children': [{'id': 100 + idx, 'name': name} for idx, name in enumerate(audioset)]}
+        vision_set = dict(id=-2, name='torchvision', selectable=False, children=[])
+        set_list = list(torchvision.datasets.__all__)
+        set_list.sort()
+        vision_set['children'] = [{"id": -200 - k, "name": v} for k, v in enumerate(set_list)]
+        all_set.append(vision_set)
 
-                visionset = list(torchvision.datasets.__all__)
-                visionset.sort()
-                vision_tree = {'id': 2, 'name': 'vision', 'selectable': False,
-                               'children': [{'id': 200+idx, 'name': name} for idx, name in enumerate(visionset)]}
+        audio_set = dict(id=-3, name='torchaudio', selectable=False, children=[])
+        set_list = list(torchaudio.datasets.__all__)
+        set_list.sort()
+        audio_set['children'] = [{"id": -300 - k, "name": v} for k, v in enumerate(set_list)]
+        all_set.append(audio_set)
 
-                response = {'records': [audio_tree, vision_tree]}
-
-    return SuccessResponse(response)
+        return SuccessResponse({'records': all_set})
 
 
 @app.post("/datasource/execute", summary="Exe sql on a source ")

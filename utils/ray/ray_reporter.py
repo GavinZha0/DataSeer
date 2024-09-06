@@ -76,10 +76,11 @@ class RayReport(Callback):
         progress = round(self.completed_trials / self.total_trials, 2) * 100
         report = dict(uid=self.user, code=RAY_TRIAL_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id,
-                                params=trial.evaluated_params, progress=progress,
-                                duration=math.ceil(trial.last_result.get('time_total_s'))))
-        report_data = report['data']
+                                params=trial.evaluated_params, progress=progress))
 
+        report_data = report['data']
+        if trial.last_result.get('time_total_s'):
+            report_data['duration'] = math.ceil(trial.last_result.get('time_total_s'))
         if self.score:
             # user specified eval metrics
             report_data['score'] = trial.last_result.get(self.score)
