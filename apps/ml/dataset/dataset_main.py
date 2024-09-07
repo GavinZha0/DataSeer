@@ -53,8 +53,8 @@ async def get_dataset_info(type: str, sql: str, df: any, length: int, limit: int
         case 'image':
             # get image attributes as stat info
             img, label = df[0]
-            stat_img = dict(name='image', type='image', count=len(df), unique=img.mode, channel=len(img.split()), size=img.size)
-            stat_label = dict(name='label', type='number', count=len(df), unique=df.classes)
+            stat_img = dict(name='image', type='int', count=len(df), mode=img.mode, channel=len(img.split()), size=img.size)
+            stat_label = dict(name='label', type='int', count=len(df), unique=df.classes)
             stat = [stat_img, stat_label]
 
             if limit is None:
