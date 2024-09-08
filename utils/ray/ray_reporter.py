@@ -53,6 +53,7 @@ class RayReport(Callback):
     # per epoch
     def on_trial_result(self, iteration, trials, trial, result, **info):
         self.completed_epochs += 1
+        # progress based on total epochs
         progress = round(self.completed_epochs / self.total_epochs, 2) * 100
         report = dict(uid=self.user, code=RAY_EPOCH_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id, progress=progress,
@@ -73,6 +74,7 @@ class RayReport(Callback):
     # per trial
     def on_trial_complete(self, iteration, trials, trial, **info):
         self.completed_trials += 1
+        # progress based on total trials
         progress = round(self.completed_trials / self.total_trials, 2) * 100
         report = dict(uid=self.user, code=RAY_TRIAL_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id,
@@ -86,8 +88,8 @@ class RayReport(Callback):
             report_data['score'] = trial.last_result.get(self.score)
 
         print(report)
-        # RedisClient().feedback(report)
-        # RedisClient().notify(report)
+        RedisClient().feedback(report)
+        RedisClient().notify(report)
 
     # per experiment
     # use experimentProgress to report end

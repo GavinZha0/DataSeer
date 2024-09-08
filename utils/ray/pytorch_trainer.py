@@ -19,6 +19,10 @@ from ray import tune, train
 import ray.tune.search as search
 from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 
+# libuv issue of pytorch 2.4
+# RuntimeError: use_libuv was requested but PyTorch was build without libuv support
+# downgrade pytorch to 2.3.1
+
 @ray.remote
 class PyTorchTrainer:
     def __init__(self, type: str):
