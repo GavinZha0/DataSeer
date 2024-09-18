@@ -54,3 +54,14 @@ class AlgoGetArgsParam(BaseModel):
 
 class AlgoExeParam(BaseModel):
     id: int = Field(..., title="Algo id")
+
+
+class AlgoExperReg(BaseModel):
+    algoId: int = Field(..., title="Algo id")
+    algoName: str = Field(..., title="Algo name")
+    trialId: str = Field(..., title="Trial id")
+
+
+class AlgoExperUnreg(BaseModel):
+    algoId: int = Field(..., title="Algo id")
+    version: int = Field(..., title="Registered version")

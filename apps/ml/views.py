@@ -22,7 +22,7 @@ from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, ex
 from .dataset.dataset_main import buildin_dataset_load, get_dataset_info
 from .eda.eda_main import extract_data, transform_data, eda_build_chart
 import pandas as pd
-
+from .experiment.experiment import exper_reg, exper_unreg
 
 app = APIRouter()
 
@@ -196,4 +196,38 @@ async def list_flow(req: param.FlowParams = Depends(), auth: Auth = Depends(AllU
 async def get_flow(data_id: int, auth: Auth = Depends(AllUserAuth())):
     data = await crud.FlowDal(auth.db).get_data(data_id, v_ret=RET.DUMP, v_where=[model.Flow.org_id == auth.user.oid])
     return SuccessResponse(data)
+
+
+@app.post("/experiment/reg", summary="Register a model")
+async def reg_experiment(req: schema.AlgoExperReg, auth: Auth = Depends(AllUserAuth())):
+    reg_ver = await exper_reg(req.trialId, req.algoName, req.algoId, auth.user.id)
+    if reg_ver>0:
+        return SuccessResponse(dict(version=reg_ver))
+    else:
+        return ErrorResponse()
+
+@app.post("/experiment/unreg", summary="Un-register a model")
+async def reg_experiment(req: schema.AlgoExperUnreg, auth: Auth = Depends(AllUserAuth())):
+    await exper_unreg(req.algoId, req.version, auth.user.id)
+    return SuccessResponse()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
