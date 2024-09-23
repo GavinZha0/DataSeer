@@ -10,7 +10,7 @@ import uvicorn
 from starlette.middleware.cors import CORSMiddleware
 from config import settings, router
 from starlette.staticfiles import StaticFiles
-from config.settings import REDIS_ENABLE, RAY_NUM_CPU, RAY_NUM_GPU, RAY_LOCAL_MODE, TEMP_DIR
+from config.settings import REDIS_ENABLE, RAY_NUM_CPU, RAY_NUM_GPU, RAY_LOCAL_MODE, TEMP_DIR, RAY_ENABLE
 from core.docs import custom_api_docs
 from core.exception import register_exception
 import typer
@@ -67,7 +67,7 @@ def create_app():
 
 @shell_app.command()
 def run(
-        host: str = typer.Option(default='127.0.0.1', help='Host ip'),
+        host: str = typer.Option(default='0.0.0.0', help='Host ip'),
         port: int = typer.Option(default=9138, help='Port')
 ):
     """
@@ -76,15 +76,18 @@ def run(
     if REDIS_ENABLE:
         RedisListener()
 
-    # init ray to connect to cluster when cluster mode
-    # give a temp folder for ray using
-    ray.init(ignore_reinit_error=True, local_mode=RAY_LOCAL_MODE,
-             num_cpus=RAY_NUM_CPU, num_gpus=RAY_NUM_GPU, _temp_dir=TEMP_DIR+'/ray/')
-    # ray.autoscaler.sdk.request_resources(bundles=[{"GPU": 1}] * 1)
+    if RAY_ENABLE:
+        # init ray to connect to cluster when cluster mode
+        # give a temp folder for ray using
+        ray.init(ignore_reinit_error=True, local_mode=RAY_LOCAL_MODE,
+                 num_cpus=RAY_NUM_CPU, num_gpus=RAY_NUM_GPU, _temp_dir=TEMP_DIR+'/ray/')
+        # ray.autoscaler.sdk.request_resources(bundles=[{"GPU": 1}] * 1)
 
     # start python server with single worker or multiple workers
     # different workers can be run on different CPU cores
+    print('starting app.......')
     uvicorn.run(app='main:create_app', host=host, port=port, workers=1, lifespan="on", factory=True)
+    print('exiting app......')
 
 
 @shell_app.command()
