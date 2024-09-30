@@ -23,7 +23,7 @@ class Dataset(BaseDbModel):
     desc: Mapped[Optional[str]] = mapped_column(String(128), comment="Description")
     group: Mapped[Optional[str]] = mapped_column(String(64), default='default', comment="Group")
     variable: Mapped[Optional[str]] = mapped_column(Text, comment="Variables")
-    query: Mapped[Optional[str]] = mapped_column(Text, comment="Query text")
+    content: Mapped[Optional[str]] = mapped_column(Text, comment="Sql query or file name")
     final_query: Mapped[Optional[str]] = mapped_column(Text, comment="Query text")
     fields: Mapped[str] = mapped_column(Text, comment="Field info")
     transform: Mapped[Optional[str]] = mapped_column(Text, comment="Transform")

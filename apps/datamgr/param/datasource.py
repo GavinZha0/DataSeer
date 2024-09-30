@@ -52,7 +52,7 @@ class DsourceCreateParams(object):
                  username: str = Body(..., title="Username"),
                  password: str = Body(..., title="Password"),
                  public: Optional[bool] = Body(False, title="Is public"),
-                 locked_table: Optional[str] = Body(None, title="Lock tables")):
+                 locked: Optional[str] = Body(None, title="Lock tables")):
         super().__init__()
         self.id = id
         self.name = name
@@ -65,6 +65,6 @@ class DsourceCreateParams(object):
         self.username = username
         self.password = password
         self.public = public
-        self.locked_table = locked_table
+        self.locked = locked
 
 

@@ -19,7 +19,7 @@ class Dataset(BaseModel):
     desc: Optional[str] = Field(None, title="Description")
     group: Optional[str] = Field("default", title="Group")
     variable: Optional[str] = Field(None, title="Variable")
-    query: Optional[str] = Field(None, title="Query text")
+    content: Optional[str] = Field(None, title="Sql query or file name")
     final_query: Optional[str] = Field(None, title="Final query")
     fields: str = Field(..., title="Field info")
     transform: Optional[str] = Field(None, title="Transform")
@@ -67,7 +67,7 @@ class DatasetCreate(BaseModel):
     group: Optional[str] = Field(None, title="Group"),
     type: str = Field(None, title="Type"),
     variable: Optional[list] = Field(None, title="Variables"),
-    query: Optional[str] = Field(None, title="Query text"),
+    content: Optional[str] = Field(None, title="Sql query or file name"),
     fields: list = Field(..., Body="Field info"),
     transform: Optional[list] = Field(None, title="Transform"),
     target: Optional[list] = Field(None, title="target field"),

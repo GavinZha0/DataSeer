@@ -27,7 +27,7 @@ class Datasource(BaseDbModel):
     password: Mapped[str] = mapped_column(String(255), comment="Password")
     version: Mapped[Optional[str]] = mapped_column(String(64), comment="Version")
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Is public")
-    locked_table: Mapped[Optional[str]] = mapped_column(Text, comment="Locked tables")
+    locked: Mapped[Optional[str]] = mapped_column(Text, comment="Locked tables")
 
     # has many datasets as children
     #datasets: Mapped[List["Dataset"]] = relationship(back_populates="datasource")

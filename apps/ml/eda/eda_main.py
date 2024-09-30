@@ -26,7 +26,7 @@ async def extract_data(dataset_id: int, db: AsyncSession):
     db = DbExecutor(source_info.type, source_info.url, passport, source_info.params)
 
     # query data and get dataframe of Pandas
-    dataframe, total = await db.db_query(dataset_info.query, None, dataset_info.variable)
+    dataframe, total = await db.db_query(dataset_info.content, None, dataset_info.variable)
     return dataframe, dataset_info.fields, dataset_info.transform
 
 """
