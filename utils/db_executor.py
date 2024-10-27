@@ -34,9 +34,7 @@ class DbExecutor:
             #     echo=False)
 
             # crate async engine
-            self.engine = create_async_engine(
-                'mysql+asyncmy://' + passport + '@' + url + '?charset=utf8mb4',
-                echo=False)
+            self.engine = create_async_engine(f'mysql+asyncmy://{passport}@{url}?charset=utf8mb4', echo=False)
 
             # driver: pymysql
             # self.engine = create_engine('mysql+pymysql://admin:admin520@datapie.cnqbtlcpe5hy.us-east-2.rds.amazonaws.com:3306/foodmart?charset=utf8mb4', echo=False)

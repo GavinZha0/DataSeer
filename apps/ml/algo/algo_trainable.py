@@ -39,36 +39,39 @@ import os
 import ray
 import mlflow
 from mlflow.utils.mlflow_tags import MLFLOW_USER, MLFLOW_RUN_NAME
-from ray.air.integrations.mlflow import setup_mlflow
 from ray.train.lightning import prepare_trainer, RayTrainReportCallback
 from ray.train.torch import prepare_data_loader, prepare_model
 from config.settings import BASE_DIR
 
+${PL_MODULE_CODE}
 
-${CUSTOM_NET_CLASS}
-
-
-# for train of custom pytorch module
-class CustomTrain:
+# trainable function of Ray
+class RayTrainable:
   def train(config: dict):
-    model = CustomNet(config)
+    # build model with config parameters
+    model = ${PL_MODULE_CLASS}(config)
+
     # use 'pop' to avoid saving data into mlflow parameters
     data = config.pop('data')
     train_loader = data['train']
     eval_loader = data['eval']
 
+    # distribution
     if config.get('dist'):
       train_loader = prepare_data_loader(train_loader)
       eval_loader = prepare_data_loader(eval_loader)
       model = prepare_model(model)
 
+    # You are using a CUDA device that has Tensor Cores. You should set `set_float32_matmul_precision('medium' | 'high')`
     torch.set_float32_matmul_precision('medium')
+
+    # mlflow setup
     mlflow.set_tracking_uri(config.get('tracking_url'))
     mlflow.set_experiment(experiment_id=config.get('exper_id'))
     mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
 
     trainer = pl.Trainer(
-      max_epochs=config.get("epochs", 1),
+      max_epochs=config.get("epochs", config.get('epochs', 1)),
       devices="auto",
       accelerator="auto",
       enable_checkpointing=False,
@@ -86,7 +89,7 @@ async def build_ray_trainable(framework: str, code: str, params: dict):
         case 'sklearn':
             trainable_code = code.replace('setup_mlflow()', sklearn_setup_mlflow)
         case 'pytorch':
-            trainable_code = pytorch_tpl.substitute({'CUSTOM_NET_CLASS': code})
+            trainable_code = pytorch_tpl.substitute({'PL_MODULE_CODE': code, 'PL_MODULE_CLASS': params['cls_name'][0]})
 
     try:
         # save trainable class to local file

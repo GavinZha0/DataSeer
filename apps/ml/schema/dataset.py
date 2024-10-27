@@ -18,6 +18,7 @@ class Dataset(BaseModel):
     name: str = Field(..., title="Name")
     desc: Optional[str] = Field(None, title="Description")
     group: Optional[str] = Field("default", title="Group")
+    type: str = Field(..., title="type")
     variable: Optional[str] = Field(None, title="Variable")
     content: Optional[str] = Field(None, title="Sql query or file name")
     final_query: Optional[str] = Field(None, title="Final query")
@@ -91,7 +92,7 @@ class DatasetCreate(BaseModel):
 
 class DatasetGetStat(BaseModel):
     id: int = Field(..., title="Source Id"),
-    sql: str = Field(..., title="Sql text"),
+    content: str = Field(..., title="Content"),
     type: str = Field(..., title="Type"),
     variable: Optional[list] = Field(None, title="Variable"),
     limit: Optional[int] = Field(None, title="Limit")

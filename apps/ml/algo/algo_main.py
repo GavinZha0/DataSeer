@@ -27,8 +27,8 @@ import sklearn.datasets as skds
 import xgboost as xgb
 import lightgbm
 import lightning
-from utils.ray.sklearn_trainer import SklearnTrainer
-from utils.ray.pytorch_trainer import PyTorchTrainer
+from utils.ray.ray_dataloader import RayDataLoader
+from utils.ray.ray_trainer import RayTrainer
 import inspect
 import ast
 
@@ -48,7 +48,7 @@ async def extract_data(dataset_id: int, db: AsyncSession):
     db = DbExecutor(source_info.type, source_info.url, passport, source_info.params)
 
     # query data and get dataframe of Pandas
-    dataframe, total = await db.db_query(dataset_info.query, None, dataset_info.variable)
+    dataframe, total = await db.db_query(dataset_info.content, None, dataset_info.variable)
     return dataframe, dataset_info.fields, dataset_info.transform
 
 
@@ -386,7 +386,6 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     algo_info = await ml_crud.AlgoDal(db).get_data(algo_id, v_ret=RET.SCHEMA)
     dataset_info = await ml_crud.DatasetDal(db).get_data(algo_info.dataCfg.get('datasetId'), v_ret=RET.SCHEMA)
     source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info.sourceId, v_ret=RET.SCHEMA)
-    psw = base64.b64decode(source_info.password).decode('utf-8')
     targets = [field['name'] for field in dataset_info.fields if 'target' in field and 'omit' not in field]
 
     # build parameters
@@ -396,31 +395,37 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     if ready is False:
         return False
 
-    # import module and class from saved file
+    train_func = None
+    # import module from saved file
     dy_module = importlib.import_module(f'temp.ml.{params["module_name"]}')
-    train_cls = getattr(dy_module, 'CustomTrain')
-    if params.get('cls_name'):
-        print(params['cls_name'])
-        # model_cls = getattr(dy_module, params['cls_name'])
+    # train_cls = getattr(dy_module, 'RayTrainable')
+    # train_func = train_cls.train
 
-    if algo_info.framework == 'sklearn':
-        # initialize RayUtils to create database connection
-        trainer = SklearnTrainer.remote(source_info.type, source_info.url, source_info.username, psw)
-        # get dataset from datasource
-        dataset_df = trainer.extract.remote(dataset_info.query)
-        # transform data based on field config of dataset
-        train_eval_data = trainer.transform.remote(dataset_df, dataset_info.fields, algo_info.dataCfg['evalRatio'],
-                                                   algo_info.dataCfg['shuffle'])
-        trainer.train.remote(params, train_cls, train_eval_data)
-    elif algo_info.framework == 'pytorch':
-        # initialize TorchTrainer to create data engine
-        trainer = PyTorchTrainer.remote('PyTorch')
-        # get dataset from datasource
-        dataset_df = trainer.extract.remote('FashionMNIST')
-        # transform, split and shuffle for training preparation
-        train_test_data = trainer.transform.remote(dataset_df, targets, algo_info.dataCfg['evalRatio'], 64, True)
-        trainer.train.remote(params, train_cls, train_test_data)
 
+    # detect classes
+    dy_cls = [cls for name, cls in inspect.getmembers(dy_module, inspect.isclass) if params["module_name"] in cls.__module__]
+    if dy_cls is None or len(dy_cls) == 0:
+        return False
+    elif dy_cls and len(dy_cls) > 0:
+        for cls in dy_cls:
+            dy_func = [func for name, func in inspect.getmembers(cls, inspect.isfunction) if name in ['train'] and cls.__name__ in func.__qualname__]
+            if dy_func and len(dy_func) > 0:
+                train_func = dy_func[0]
+                break
+
+    # return if no trainable function for Ray
+    if train_func is None:
+        return False
+
+    # load and transform data
+    loader = RayDataLoader.remote(source_info)
+    dataset_df = loader.load.remote(dataset_info.content, dataset_info.variable)
+    train_eval_data = loader.transform.remote(algo_info.framework, dataset_df, targets, dataset_info.fields,
+                                              algo_info.dataCfg['evalRatio'], algo_info.dataCfg['shuffle'])
+
+    # train model
+    trainer = RayTrainer.remote(algo_info.framework)
+    trainer.train.remote(params, train_func, train_eval_data)
 
 """
 build parameters for train

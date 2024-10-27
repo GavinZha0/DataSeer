@@ -26,9 +26,13 @@ async def buildin_dataset_load(func: str, limit: int, params: []):
 
 
 
-async def get_dataset_info(type: str, sql: str, df: any, length: int, limit: int):
+async def get_data_stat(type: str, df: any, limit: int = None):
     data = None
     stat = None
+    max_limit = limit
+    if limit == None:
+        # default limit
+        max_limit = 10
 
     match(type):
         case 'data':
@@ -47,9 +51,7 @@ async def get_dataset_info(type: str, sql: str, df: any, length: int, limit: int
             stat = stat.reset_index().rename(columns={"index": "name", "25%": "pct25", "50%": "median", "75%": "pct75"})
             stat = stat.round(3)
             stat = stat.to_dict(orient='records')
-
-            if limit:
-                data = df.head(limit)
+            data = df.head(max_limit)
         case 'image':
             # get image attributes as stat info
             img, label = df[0]
@@ -57,12 +59,9 @@ async def get_dataset_info(type: str, sql: str, df: any, length: int, limit: int
             stat_label = dict(name='label', type='int', count=len(df), unique=df.classes)
             stat = [stat_img, stat_label]
 
-            if limit is None:
-                limit = 10
-
             # encode image to base64 string
             data = pd.DataFrame(data=None, columns=['image', 'label'])
-            for i in range(limit):
+            for i in range(max_limit):
                 buffer = io.BytesIO()
                 img, label = df[i]
                 img.save(buffer, 'PNG')

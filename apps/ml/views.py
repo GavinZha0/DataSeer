@@ -10,6 +10,7 @@ from sqlalchemy import select
 from fastapi import Depends, APIRouter
 from apps.auth.auth import AllUserAuth
 from core.crud import RET
+from utils.data_loader import DataLoader
 from utils.db_executor import DbExecutor
 from . import param, schema, crud, model
 from apps.datamgr import model as dm_models
@@ -19,7 +20,7 @@ from apps.auth.token import Auth
 from itertools import groupby
 from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores, \
     extract_frame_versions, extract_ml_datasets
-from .dataset.dataset_main import buildin_dataset_load, get_dataset_info
+from .dataset.dataset_main import buildin_dataset_load, get_data_stat
 from .eda.eda_main import extract_data, transform_data, eda_build_chart
 import pandas as pd
 from .experiment.experiment import exper_reg, exper_unreg
@@ -70,27 +71,36 @@ async def extract_buildin_dataset(auth: Auth = Depends(AllUserAuth())):
 
 
 @app.post("/dataset/execute", summary="Exe Ml Dataset")
-async def get_dataset(dataset_id: int, auth: Auth = Depends(AllUserAuth())):
-    return SuccessResponse(await crud.DatasetDal(auth.db).get_data(dataset_id, v_ret=RET.DUMP))
-
-
-@app.post("/dataset/stat", summary="Get dataset stat")
-async def get_dataset_stat(req: schema.DatasetGetStat, auth: Auth = Depends(AllUserAuth())):
-    df: pd.dataframe = None
-
-    if req.id > 0:
-        src_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id, v_where=[dm_models.Datasource.org_id == auth.user.oid])
-        passport = src_info.username + ':' + base64.b64decode(src_info.password).decode('utf-8')
-        # get data from db
-        db = DbExecutor(src_info.type, src_info.url, passport, src_info.params)
-        df, total = await db.db_query(req.sql, None, req.variable)
-    else:
-        df, total = await buildin_dataset_load(req.sql, None, req.variable)
-
+async def exe_dataset(req: schema.DatasetGetOne, auth: Auth = Depends(AllUserAuth())):
+    # query dataset and datasource info
+    dataset_info = await crud.DatasetDal(auth.db).get_data(req.id, v_ret=RET.SCHEMA, v_where=[model.Dataset.org_id == auth.user.oid])
+    src_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
+    #build data loader
+    loader = DataLoader(src_info)
+    # load data
+    df, total = await loader.load(dataset_info.content, dataset_info.variable, None)
     if df is None:
         return SuccessResponse({'total': 0, 'records': [], 'stat': {}})
 
-    data, stat = await get_dataset_info(req.type, req.sql, df, total, req.limit)
+    # get statistics info
+    data, stat = await get_data_stat(dataset_info.type, df, None)
+    return SuccessResponse({'total': total, 'records': data, 'stat': stat})
+
+
+@app.post("/dataset/stat", summary="Get data stat")
+async def get_dataset_stat(req: schema.DatasetGetStat, auth: Auth = Depends(AllUserAuth())):
+    df: pd.dataframe = None
+    # query datasource info
+    src_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id)
+    # build data loader
+    loader = DataLoader(src_info)
+    # load data
+    df, total = await loader.load(req.content, req.variable, None)
+    if df is None:
+        return SuccessResponse({'total': 0, 'records': [], 'stat': {}})
+
+    # get statistics info
+    data, stat = await get_data_stat(req.type, df, req.limit)
     return SuccessResponse({'total': total, 'records': data, 'stat': stat})
 
 
@@ -119,12 +129,21 @@ async def get_dataset(auth: Auth = Depends(AllUserAuth())):
 
 @app.post("/eda/build", summary="Build ML Eda charts")
 async def build_eda(req: schema.EdaBuildParam, auth: Auth = Depends(AllUserAuth())):
-    # query data and get dataframe of Pandas
-    dataframe, fields, transform = await extract_data(req.dataset_id, auth.db)
+    # query dataset and datasource info
+    dataset_info = await crud.DatasetDal(auth.db).get_data(req.dataset_id, v_ret=RET.SCHEMA,
+                                                           v_where=[model.Dataset.org_id == auth.user.oid])
+    src_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
+    # build data loader
+    loader = DataLoader(src_info)
+    # load data
+    df, total = await loader.load(dataset_info.content, dataset_info.variable, None)
+    if df is None:
+        return SuccessResponse()
+
     # transform data
-    transformed_df = await transform_data(dataframe, fields, transform)
+    transformed_df = await transform_data(df, dataset_info.fields, dataset_info.transform)
     # generate eda chart
-    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, transformed_df, fields)
+    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, transformed_df, dataset_info.fields)
 
     return SuccessResponse(json_rsp)
 
