@@ -5,25 +5,22 @@
 # @File           : views.py
 # @desc           : ML API
 
-import base64
 from sqlalchemy import select
 from fastapi import Depends, APIRouter
 from apps.auth.auth import AllUserAuth
 from core.crud import RET
 from utils.data_loader import DataLoader
-from utils.db_executor import DbExecutor
 from . import param, schema, crud, model
-from apps.datamgr import model as dm_models
 from apps.datamgr import crud as dm_crud
 from utils.response import SuccessResponse, ErrorResponse
 from apps.auth.token import Auth
 from itertools import groupby
 from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores, \
     extract_frame_versions, extract_ml_datasets
-from .dataset.dataset_main import buildin_dataset_load, get_data_stat
-from .eda.eda_main import extract_data, transform_data, eda_build_chart
+from .dataset.dataset_main import get_data_stat
+from .eda.eda_main import transform_data, eda_build_chart
 import pandas as pd
-from .experiment.experiment import exper_reg, exper_unreg
+from .experiment.experiment import exper_reg, exper_unreg, exper_publish, exper_unpublish
 
 app = APIRouter()
 
@@ -231,22 +228,18 @@ async def reg_experiment(req: schema.AlgoExperUnreg, auth: Auth = Depends(AllUse
     return SuccessResponse()
 
 
+@app.post("/experiment/publish", summary="Publish a model")
+async def publish_experiment(req: schema.AlgoExperReg, auth: Auth = Depends(AllUserAuth())):
+    reg_ver, published = await exper_publish(req.trialId, req.algoName, req.algoId, auth.user.id)
+    if reg_ver>0 and published:
+        return SuccessResponse(dict(version=reg_ver, published=published))
+    else:
+        return ErrorResponse()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+@app.post("/experiment/unpublish", summary="Un-publish a model")
+async def unpublish_experiment(req: schema.AlgoExperUnreg, auth: Auth = Depends(AllUserAuth())):
+    await exper_unpublish(req.algoId, req.version, auth.user.id)
+    return SuccessResponse()
 
 
 
