@@ -24,8 +24,8 @@ un-register a model
 """
 
 async def exper_unreg(algo_id: int, version: int, user_id: int):
-    mlflow.set_tracking_uri(settings.SQLALCHEMY_MLFLOW_DB_URL)
-    client = mlflow.MlflowClient()
+    # mlflow.set_tracking_uri(settings.SQLALCHEMY_MLFLOW_DB_URL)
+    client = mlflow.MlflowClient(settings.SQLALCHEMY_MLFLOW_DB_URL)
 
     # md = client.get_model_version(name=f'{algo_id}_{user_id}', version=version)
     # filter_str = f"run_id='{md.run_id}'"
@@ -50,7 +50,7 @@ async def exper_publish(run_uuid: str, algo_name: str, algo_id: int, user_id: in
     if mvers:
         version = mvers[0].version
         # model was registered
-        client = mlflow.MlflowClient()
+        client = mlflow.MlflowClient(settings.SQLALCHEMY_MLFLOW_DB_URL)
         client.set_model_version_tag(f'{algo_id}_{user_id}', version, "published", True)
     else:
         # register and publish
@@ -68,6 +68,6 @@ un-publish a model
 """
 
 async def exper_unpublish(algo_id: int, version: int, user_id: int):
-    mlflow.set_tracking_uri(settings.SQLALCHEMY_MLFLOW_DB_URL)
-    client = mlflow.MlflowClient()
+    # mlflow.set_tracking_uri(settings.SQLALCHEMY_MLFLOW_DB_URL)
+    client = mlflow.MlflowClient(settings.SQLALCHEMY_MLFLOW_DB_URL)
     client.delete_model_version_tag(name=f'{algo_id}_{user_id}', version=version, key='published')

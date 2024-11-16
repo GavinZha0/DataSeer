@@ -2,16 +2,13 @@
 # -*- coding: utf-8 -*-
 # @version        : 1.0
 # @Create Time    : 2024/2/10
-# @File           : image.py
-# @IDE            : PyCharm
 # @desc           : AI image
 
 from typing import Optional
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from apps.admin.model import SysOrg
-from apps.ai.model.model import AiModel
 from db.db_base import BaseDbModel
-from sqlalchemy import String, Boolean, ForeignKey, Text
+from sqlalchemy import String, Boolean, ForeignKey, Text, Integer
 
 
 class AiImage(BaseDbModel):
@@ -29,8 +26,8 @@ class AiImage(BaseDbModel):
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Is public")
 
     # bind to unique model
-    model_id: Mapped[int] = mapped_column(ForeignKey('ai_model.id'), comment="Model id")
-    model: Mapped[AiModel] = relationship(lazy='selectin')
+    model_id: Mapped[int] = mapped_column(Integer, comment="Model id")
+    # model: Mapped[AiModel] = relationship(lazy='selectin')
 
     # bind to unique org
     org_id: Mapped[int] = mapped_column(ForeignKey('sys_org.id'), comment="Org id")
