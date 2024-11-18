@@ -10,6 +10,9 @@ from apps.auth.token import Auth
 from . import model, param, crud
 from apps.auth.auth import AllUserAuth
 from fastapi import Depends, APIRouter
+
+from .mstore.data import data_execute
+from .schema.data import AiDataExecute
 from .schema.model import AiModelDeploy
 from .mstore.model import model_deploy, model_terminate
 
@@ -60,6 +63,21 @@ async def deploy_model(req: AiModelDeploy, auth: Auth = Depends(AllUserAuth())):
         # fail to start service
         print(f'Failed to start ML service {req.id}!')
         return ErrorResponse(info)
+
+###########################################################
+#    AiData
+###########################################################
+@app.post("/data/list", summary="List AiData")
+async def list_data(req: param.ImageParams = Depends(), auth: Auth = Depends(AllUserAuth())):
+    datas, count = await crud.ImageDal(auth.db).get_datas(**req.dict(), v_count=True, v_ret=RET.DUMP,
+                                                          v_where=[model.AiImage.org_id == auth.user.oid])
+    return SuccessResponse(datas, count=count)
+
+
+@app.post("/data/execute", summary="Execute AiData")
+async def execute_data(req: AiDataExecute, auth: Auth = Depends(AllUserAuth())):
+    result = await data_execute(req.endpoint, req.data)
+    return SuccessResponse(result)
 
 
 ###########################################################
