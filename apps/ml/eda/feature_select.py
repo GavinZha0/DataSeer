@@ -117,7 +117,6 @@ def feature_model_eval(X: pd.DataFrame, y: pd.DataFrame, config):
         model = config['model']
 
     classif = False
-    y_array = []
     if y is not None:
         # ONE target only
         yy = y.iloc[:, 0]
@@ -132,7 +131,7 @@ def feature_model_eval(X: pd.DataFrame, y: pd.DataFrame, config):
                 prime = selector.get_support()
                 scores = np.abs(selector.estimator_.coef_[0])
             else:
-                selector = SelectFromModel(LinearRegression(), threshold='mean').fit(X, y_array)
+                selector = SelectFromModel(LinearRegression(), threshold='mean').fit(X, yy)
                 prime = selector.get_support()
                 scores = selector.estimator_.coef_
         case 'lasso':

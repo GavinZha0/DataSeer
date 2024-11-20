@@ -699,6 +699,9 @@ def plt_stat_outlier(cfg, df, fields):
 
             num_col = 3
             num_row = math.ceil((len(outers.columns)-1) / num_col)
+            if num_row == 0:
+                return None
+
             fig = make_subplots(rows=num_row, cols=num_col,
                                 subplot_titles=['{} ({})'.format(n, outers[n].count()) for n in outers.columns if n != 'type'],
                                 row_heights=[400 for n in range(num_row)],
@@ -799,6 +802,9 @@ def plt_stat_outlier(cfg, df, fields):
     dim = 2
     if cfg.get('d3'):
         dim = 3
+
+    if dim > len(num_fields):
+        return None
 
     # visualization solution of 2d/3d
     if cfg.get('umap'):
@@ -1159,9 +1165,13 @@ def plt_corr_pair(cfg, df, fields):
                     break
 
         pair_fields.append(cat)
-    fig = ff.create_scatterplotmatrix(df[pair_fields], diag=box, index=cat)
-    fig.update_layout(title='', width=1400, height=700)
-    return fig
+
+    if len(pair_fields) > 1:
+        fig = ff.create_scatterplotmatrix(df[pair_fields], diag=box, index=cat)
+        fig.update_layout(title='', width=1400, height=700)
+        return fig
+    else:
+        return None
 
 
 
