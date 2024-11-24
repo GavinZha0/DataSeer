@@ -179,8 +179,8 @@ async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAut
 
 @app.post("/algo/args", summary="Get algo args")
 async def get_args(params: schema.AlgoGetArgsParam, auth: Auth = Depends(AllUserAuth())):
-    algo_args = await extract_algo_args(params.framework, params.category, params.algo)
-    return SuccessResponse({'records': algo_args})
+    args_and_doc = await extract_algo_args(params.framework, params.category, params.algo)
+    return SuccessResponse({'records': args_and_doc})
 
 
 @app.post("/algo/scores", summary="Get algo scores")

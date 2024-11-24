@@ -206,6 +206,9 @@ def feature_iter_search(X: pd.DataFrame, y: pd.DataFrame, config):
             # soring: accuracy, recall, f1, mse,
             # Extra-Trees (Extremely randomized trees，极度随机树)
             # 相比于随机森林，极度随机表现在对决策树节点的划分上
+            if len(X.columns) < 2:
+                # a minimum of 2 features is required
+                return None
             scoring = 'accuracy'
             if config.get('scoring'):
                 scoring = config['scoring']

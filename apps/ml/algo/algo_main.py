@@ -310,6 +310,8 @@ pytorch category: vision,
 async def extract_algo_args(framework: str, category: str, algo: str):
     category_map = {'clf': 'classifier', 'reg': 'regressor', 'cluster': 'cluster', 'transform': 'transformer'}
     args = []
+    algo_func = None
+    algo_doc = None
     match framework:
         case 'sklearn':
             # find algo func from sklearn estimators
@@ -318,10 +320,37 @@ async def extract_algo_args(framework: str, category: str, algo: str):
             estimators = all_estimators(type_filter=category_map[category])
             algo_funcs = [class_ for name, class_ in estimators if name == algo]
             algo_func = algo_funcs[0]
+            if algo_func:
+                # cut doc to get parameter description
+                algo_doc = algo_func.__doc__
+                print(algo_doc)
+                para_idx = algo_doc.find('------\n')
+                if para_idx >= 0:
+                    # ex: 'Parameters\n ----------\n'
+                    algo_doc = algo_doc[para_idx + 8:]
+
+                para_idx = algo_doc.find('------\n')
+                if para_idx > 0:
+                    # ex: 'Attributes\n --------\n'
+                    algo_doc = algo_doc[:para_idx - 20]
+
         case 'pytorch':
             # can be ignored arguments
             ignored = ['kwargs']
             algo_func = torchvision.models.get_model_builder(algo)
+            if algo_func:
+                # cut doc to get parameter description
+                algo_doc = algo_func.__doc__
+                print(algo_doc)
+                para_idx = algo_doc.find('Args:\n')
+                if para_idx >= 0:
+                    # ex: 'Args:\n'
+                    algo_doc = algo_doc[para_idx + 6:]
+
+                para_idx = algo_doc.find('.. ')
+                if para_idx > 0:
+                    # ex: '.. autoclass::'
+                    algo_doc = algo_doc[:para_idx - 4]
         case 'default':
             return []
 
@@ -332,9 +361,8 @@ async def extract_algo_args(framework: str, category: str, algo: str):
                     if (not inspect.isclass(it.default)) and (it.name not in ignored)]
 
         # get options from doc of algo function
-        algo_doc = algo_func.__doc__
         for it in args:
-            # find description of the algo
+            # find description of the algo parameter
             # ex: criterion : {"gini", "entropy", "log_loss"}, default="gini"
             idx = algo_doc.find(it["name"] + ' : {')
             idz = algo_doc.find('}', idx)
@@ -345,7 +373,7 @@ async def extract_algo_args(framework: str, category: str, algo: str):
                 tmp = algo_doc[idy + 1:idz].replace('"', '').replace(' ', '')
                 it['options'] = tmp.split(',')
 
-    return args
+    return dict(algo=algo, args=args, doc=algo_doc)
 
 
 """

@@ -154,8 +154,9 @@ def check_endpoint(platform: str, url: str):
     # default unknown
     serving = AI_MODEL_STATUS_UNKNOWN
 
-    match platform:
-        case 'MlFlow':
+    # MLflow, Ray, ...
+    match platform.lower():
+        case 'mlflow':
             rest_api = url.replace('invocations', 'version')
             for i in range(5):
                 time.sleep(3)
@@ -170,7 +171,7 @@ def check_endpoint(platform: str, url: str):
                 except:
                     serving = AI_MODEL_STATUS_EXCEPTION
                     print(f'Ping-{i}: {rest_api}')
-        case 'Ray':
+        case 'ray':
             return AI_MODEL_STATUS_SERVING
     return serving
 

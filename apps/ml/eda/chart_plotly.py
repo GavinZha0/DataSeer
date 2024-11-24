@@ -206,6 +206,8 @@ def plt_reduction_chart(kind, config, df, fields):
             # 线性降维技术，它将数据方差较小的特征投影到低维空间
             # 广泛应用于线性代数、信号处理和机器学习等领域
             # 无监督，线性
+            if dim < 2:
+                return None
             svd = TruncatedSVD(n_components=dim)
             data = svd.fit_transform(f_df)
         case 'tsne':
@@ -851,8 +853,7 @@ histogram for numeric fields with/without kde
 """
 def plt_dist_hist(cfg, df, fields):
     num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc'] + \
-                 [field['name'] for field in fields if field['attr'] == 'date']
+                 [field['name'] for field in fields if field['attr'] == 'disc']
 
     num_col = 3
     num_row = math.ceil(len(num_fields) / num_col)
@@ -1444,9 +1445,10 @@ def plt_ts_trend(tsn, cfg, df, fields):
             frac = 0
         elif frac > 1:
             frac = 1
-        win = math.floor(frac * max_win)
-        if win <= 0:
-            win = 1
+
+    win = math.floor(frac * max_win)
+    if win <= 0:
+        win = 1
 
     fig = go.Figure()
     # ts_df.reset_index(inplace=True)
@@ -1670,6 +1672,7 @@ def plt_ts_compare(tsn, cfg, df, fields):
         ww = dict(enumerate(calendar.day_abbr))
         ts_df['ts_' + period] = ts_df['ts_' + period].map(ww)
 
+    # why didn't I use hisFunc for agg - Gavin??
     fig = px.histogram(ts_df, x='ts_' + group, y=vfield, color='ts_' + period, barmode='group')
     fig.update_xaxes(type='category')
     fig.update_layout(xaxis_title='', yaxis_title='', legend_title='')
@@ -1803,7 +1806,7 @@ def plt_ts_quantile(tsn, cfg, df, fields):
         ts_format = '%YQ%q'
     elif period.startswith('M'):
         ts_format = '%Y-%b'
-    elif period.startswith('u'):
+    elif period.startswith('W') or period.startswith('us'):
         ts_format = '%Y-W%U'
     elif period.startswith('D'):
         ts_format = '%Y-%m-%d'
@@ -1987,6 +1990,7 @@ def plt_ts_predict(tsn, cfg, df, fields):
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
         case 'ets':
             # Holt-Winter's additive/multiplicative/damped method(有趋势也有季节性)
+            # Cannot compute initial seasonals using heuristic method with less than two full seasonal cycles in the data.
             md = ExponentialSmoothing(ts_df, trend=trend, seasonal=season, damped_trend=damped).fit(optimized=True, use_brute=True)
             pred = md.predict(start=len(ts_df) - 7, end=len(ts_df) + future_step)
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
@@ -2001,11 +2005,17 @@ def plt_ts_predict(tsn, cfg, df, fields):
             elif cfg['period'].startswith('W'):
                 param_m = 52
             temp_df = ts_df.head(len(ts_df)-7)
+
+            # the following issue when import pmdarima
+            # reason: numpy version is high
+            # numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
             # md = pm.auto_arima(temp_df, d=1, D=1, max_P=3, max_D=3, max_Q=3, m=param_m, seasonal=True,
             #                       trend='t', error_action='warn', trace=True, maxiter=10, n_jobs=3, n_fits=3)
             # pred = md.predict(future_step+7)
         case 'autoarima':
             # 自动差分整合移动平均自回归模型
+            from sktime.datasets import load_airline
+            yyyyy = load_airline()
             temp_df = ts_df.head(len(ts_df) - 7)
             md = AutoARIMA(sp=12, seasonal=True, n_jobs=3, n_fits=3, maxiter=10, trace=True).fit(temp_df)
             prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
@@ -2016,6 +2026,7 @@ def plt_ts_predict(tsn, cfg, df, fields):
             prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
             pred = md.predict(prange)
         case 'fb':
+            # not working because Prophet requires package 'numpy<2.0'
             temp_df = ts_df.head(len(ts_df) - 7)
             md = Prophet(seasonality_mode=season, n_changepoints=int(len(ts_df) / 12),
                 add_country_holidays={"country_name": "US"}, yearly_seasonality=True).fit(temp_df)
