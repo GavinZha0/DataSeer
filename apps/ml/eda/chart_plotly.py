@@ -27,6 +27,7 @@ from statsmodels.tsa.holtwinters import SimpleExpSmoothing, Holt, ExponentialSmo
 # import pmdarima as pm
 from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.ets import AutoETS
+from sktime.param_est.seasonality import SeasonalityACF
 from sktime.forecasting.trend import PolynomialTrendForecaster
 from sktime.forecasting.fbprophet import Prophet
 import matplotlib.pyplot as plt
@@ -2014,22 +2015,44 @@ def plt_ts_predict(tsn, cfg, df, fields):
             # pred = md.predict(future_step+7)
         case 'autoarima':
             # 自动差分整合移动平均自回归模型
-            from sktime.datasets import load_airline
-            yyyyy = load_airline()
+            # from sktime.datasets import load_airline
+            # yyyyy = load_airline()
             temp_df = ts_df.head(len(ts_df) - 7)
+            # the following issue when import pmdarima
+            # reason: numpy version is high
+            # numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
             md = AutoARIMA(sp=12, seasonal=True, n_jobs=3, n_fits=3, maxiter=10, trace=True).fit(temp_df)
             prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
             pred = md.predict(prange)
         case 'autoets':
             temp_df = ts_df.head(len(ts_df) - 7)
-            md = AutoETS(auto=True, sp=12).fit(temp_df)
-            prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
+            # temp_df.index = temp_df.index.strftime('%Y-%m')
+            # autoETS asks Series, not Dataframe.
+            # 'M' is available for period, but is deprecated by Datetime
+            period_unit = period
+            if period and period == 'MS':
+                period_unit = 'M'
+            t_series = pd.Series(temp_df.values.T[0], index=temp_df.index.to_period(period_unit))
+            # season period estimation
+            sp_est = SeasonalityACF()
+            sp_est.fit(t_series)
+            sp = sp_est.get_fitted_params()["sp"]
+            print(f'estimated sp: {sp}')
+
+            if season:
+                # season: 'add' or 'mul'
+                md = AutoETS(trend=trend, seasonal=season[:3], sp=12).fit(t_series)
+            else:
+                md = AutoETS(auto=True, sp=12).fit(t_series)
+
+            # autoETS asks Series, not Dataframe
+            # prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
+            prange = pd.period_range(temp_df.index.max(), periods=future_step + 7, freq=period_unit)
             pred = md.predict(prange)
         case 'fb':
-            # not working because Prophet requires package 'numpy<2.0'
             temp_df = ts_df.head(len(ts_df) - 7)
             md = Prophet(seasonality_mode=season, n_changepoints=int(len(ts_df) / 12),
-                add_country_holidays={"country_name": "US"}, yearly_seasonality=True).fit(temp_df)
+                add_country_holidays={"country_name": "US"}).fit(temp_df)
             prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
             pred = md.predict(prange)
             pred = pred[vf]
@@ -2042,6 +2065,8 @@ def plt_ts_predict(tsn, cfg, df, fields):
         # convert to period for getting quarters
         pred.index = pred.index.to_period('Q')
         pred.index = pred.index.strftime('%Y%q')
+    elif period.startswith('M'):
+        pred.index = pred.index.strftime('%Y-%m')
 
     fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vf], name=vf, mode='lines'))
     fig.add_trace(go.Scatter(x=pred.index, y=pred.values, name='Prediction', mode='lines'))
