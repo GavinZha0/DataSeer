@@ -70,7 +70,7 @@ class RayTrainer:
 
         # create progress report
         progressRpt = RayReport(params)
-        progressRpt.experimentProgress(JOB_PROGRESS_START)
+        progressRpt.jobProgress(JOB_PROGRESS_START)
 
         if params.get('gpu') == True:
             tune_func = tune.with_resources(tune.with_parameters(train_func, data=data), resources={"gpu": 1})
@@ -100,10 +100,10 @@ class RayTrainer:
         except RayError as e:
             print(e)
             # report exception
-            progressRpt.experimentException(e)
+            progressRpt.jobProgress(JOB_PROGRESS_END, e)
         else:
             # report progress
-            progressRpt.experimentProgress(JOB_PROGRESS_END)
+            progressRpt.jobProgress(JOB_PROGRESS_END)
 
 
 
@@ -143,7 +143,7 @@ class RayTrainer:
 
         # create progress report
         progressRpt = RayReport(params)
-        progressRpt.experimentProgress(JOB_PROGRESS_START)
+        progressRpt.jobProgress(JOB_PROGRESS_START)
 
         # Configure computation resources
         scaling_cfg = ScalingConfig(num_workers=1, use_gpu=True)
@@ -172,7 +172,7 @@ class RayTrainer:
             result = tuner.fit()
         except RayError as e:
             print(e)
-            progressRpt.experimentException(e)
+            progressRpt.jobProgress(JOB_PROGRESS_END, e)
         else:
             # report progress
-            progressRpt.experimentProgress(JOB_PROGRESS_END)
+            progressRpt.jobProgress(JOB_PROGRESS_END)

@@ -323,7 +323,6 @@ async def extract_algo_args(framework: str, category: str, algo: str):
             if algo_func:
                 # cut doc to get parameter description
                 algo_doc = algo_func.__doc__
-                print(algo_doc)
                 para_idx = algo_doc.find('------\n')
                 if para_idx >= 0:
                     # ex: 'Parameters\n ----------\n'
@@ -341,7 +340,6 @@ async def extract_algo_args(framework: str, category: str, algo: str):
             if algo_func:
                 # cut doc to get parameter description
                 algo_doc = algo_func.__doc__
-                print(algo_doc)
                 para_idx = algo_doc.find('Args:\n')
                 if para_idx >= 0:
                     # ex: 'Args:\n'

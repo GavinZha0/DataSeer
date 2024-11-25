@@ -7,7 +7,7 @@ RAY_STEP_REPORT = 1
 RAY_EPOCH_REPORT = 2
 RAY_TRIAL_REPORT = 3
 RAY_EXPERIMENT_REPORT = 4
-RAY_JOB_EXCEPTION = 5
+RAY_JOB_REPORT = 5
 
 JOB_PROGRESS_START = 1
 JOB_PROGRESS_END = 100
@@ -96,32 +96,33 @@ class RayReport(Callback):
     def on_experiment_end(self, trials, **info):
         # progress 100: experiment end
         report = dict(uid=self.user, code=RAY_EXPERIMENT_REPORT, msg='',
-                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=100, trials=[]))
+                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=100, rate=100, trials=[]))
         report_data = report['data']
 
+        failed_trial = 0
         for trial in trials:
             trial_info = dict(id=trial.trial_id, params=trial.evaluated_params)
             if trial.get_error():
                 trial_info['error'] = trial.get_error()
+                failed_trial += 1
 
             if self.score:
                 # user specified eval metrics
                 trial_info['score'] = trial.last_result.get(self.score)
             report_data['trials'].append(trial_info)
-        print(report)
-        # RedisClient().feedback(report)
-        # RedisClient().notify(report)
 
-    def experimentProgress(self, progress: int):
-        # progress 1: experiment start
-        # progress 100: experiment end
-        report = dict(uid=self.user, code=RAY_EXPERIMENT_REPORT, msg='',
-                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=progress))
+        # success rate
+        report_data['rate'] = 100 - round(failed_trial/len(trials), 2) * 100
+        print(report)
         RedisClient().feedback(report)
         RedisClient().notify(report)
 
-    def experimentException(self, exception: str):
-        report = dict(uid=self.user, code=RAY_JOB_EXCEPTION, msg='tuner.fit exception',
-                      data=dict(name=self.name, algoId=self.algo, experId=self.exper, detail=exception))
+    def jobProgress(self, progress: int, exception: str | None = None):
+        if exception:
+            report = dict(uid=self.user, code=RAY_JOB_REPORT, msg='tuner.fit exception',
+                    data=dict(name=self.name, algoId=self.algo, experId=self.exper, detail=exception, progress=progress))
+        else:
+            report = dict(uid=self.user, code=RAY_JOB_REPORT, msg='',
+                    data=dict(name=self.name, algoId=self.algo, experId=self.exper, progress=progress))
         RedisClient().feedback(report)
         RedisClient().notify(report)
