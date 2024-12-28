@@ -116,26 +116,23 @@ class RayTrainable:
     # build model with config parameters
     model = ${PL_MODULE_CLASS}(config)
 
-    # get data by way 1
+    # get dataset of ray
     data_shard = ray.train.get_dataset_shard("train_set")
-    train_set = None
-    def collate_fn(batch: Dict[str, np.ndarray]) -> Any:
-        # return tensor array
-        # [(tensor([3.5000, 0.2000, 5.1000, 1.4000]), tensor(0))...]
-        return batch['item']
-    for batch in data_shard.iter_torch_batches(collate_fn=collate_fn):
-        if train_set is None:
-            train_set = batch
-        else:
-            train_set += batch
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=config.get('batch'), shuffle=False)
+    # MaterializedDataset(num_blocks=2,num_rows=60000,schema={item: extension<ray.data.arrow_pickled_object<ArrowPythonObjectType>>})
+    train_set = []
+    for item in data_shard.iter_batches(batch_size=1):
+      train_set.append(item['item'][0])
 
-    # get data by way 2
     data_shard = ray.train.get_dataset_shard("val_set")
     val_set = []
-    for batch in data_shard.iter_batches(batch_size=1):
-        val_set.append(batch['item'][0])
-    val_loader = torch.utils.data.DataLoader(val_set, batch_size=config.get('batch'), shuffle=False)
+    for item in data_shard.iter_batches(batch_size=1):
+      val_set.append(item['item'][0])
+
+    # split data into train and validation before training
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=config.get('batch'), shuffle=False,
+                                            num_workers=2, persistent_workers=True)
+    val_loader = torch.utils.data.DataLoader(val_set, batch_size=config.get('batch'), shuffle=False, num_workers=2,
+                                            persistent_workers=True)
 
     # You are using a CUDA device that has Tensor Cores. You should set `set_float32_matmul_precision('medium' | 'high')`
     torch.set_float32_matmul_precision('medium')
@@ -171,6 +168,7 @@ async def build_ray_trainable(category: str, code: str, params: dict):
     # category = 'sklearn.classifier'
     temp_cat = category.split('.')
     frame = temp_cat[0].upper()
+    trainable_code = ''
 
     if frame == 'SKLEARN':
         trainable_code = code.replace('import ray', sklearn_library)
@@ -182,8 +180,8 @@ async def build_ray_trainable(category: str, code: str, params: dict):
         # save trainable class to local file
         if os.path.exists(f'{TEMP_DIR}/ml/') is False:
             os.mkdir(f'{TEMP_DIR}/ml/')
-        # with open(f'{TEMP_DIR}/ml/{params["module_name"]}.py', 'w') as file:
-        #    file.write(trainable_code)
+        with open(f'{TEMP_DIR}/ml/{params["module_name"]}.py', 'w') as file:
+          file.write(trainable_code)
     except Exception as e:
         print(e)
         return False
