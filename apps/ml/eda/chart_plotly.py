@@ -29,6 +29,7 @@ import calendar
 from scipy.signal import periodogram
 from statsmodels.tsa.holtwinters import SimpleExpSmoothing, Holt, ExponentialSmoothing
 # import pmdarima as pm
+# sktime 0.35.0 requires scikit-learn<1.6.0,>=0.24, but you have scikit-learn 1.6.0 which is incompatible.
 from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.ets import AutoETS
 from sktime.param_est.seasonality import SeasonalityACF

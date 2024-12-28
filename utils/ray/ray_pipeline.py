@@ -108,6 +108,8 @@ class RayPipeline:
         # serialization issue of ray.data.read_sql is resolved by this way
         def create_conn(usr: str, psw: str, host: str, db: str):
             def conn():
+                # worked with mysql-connector-python 9.0.0
+                # failed with mysql-connector-python 9.1.0
                 return ct.connect(user=usr, password=psw, host=host, database=db)
             return conn
 
