@@ -6,6 +6,8 @@
 # @IDE            : PyCharm
 # @desc           : pydantic model
 import json
+import re
+
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from core.data_types import DatetimeStr
 
@@ -17,8 +19,7 @@ class Algo(BaseModel):
     name: str = Field(..., title="Name")
     desc: str | None = Field(None, title="Description")
     group: str | None = Field("default", title="Group")
-    framework: str | None = Field("python", title="Framework")
-    frameVer: str | None = Field("3.10", title="Frame version", alias='frame_ver')
+    tags: str | None = Field(None, title="Tags")
     category: str = Field(..., title="Category")
     srcCode: str | None = Field(None, title="Source code", alias='src_code')
     dataCfg: str | None = Field(None, title="Data Config", alias='data_cfg')
@@ -33,21 +34,30 @@ class Algo(BaseModel):
 
     @field_validator('dataCfg', 'trainCfg', mode='after')
     @classmethod
-    def config_validator(cls, v: str) -> dict:
+    def fields_validator(cls, v: str) -> dict:
         if v is not None and len(v) > 0:
             return json.loads(v)
             # return execjs.eval(v)
         else:
             return v
 
+    @field_validator('tags', mode='after')
+    @classmethod
+    def tags_validator(cls, v: str) -> list:
+        if v is not None and len(v) > 0:
+            # list-like string without quotes
+            # ex: [aaa,bbb,ccc]
+            vv = re.sub(r'[\[\]]', '', v).split(',')
+            vv = [name.strip() for name in vv]
+            return vv
+        else:
+            return v
 
 class AlgoGetParam(BaseModel):
-    framework: str = Field(..., title="Framework")
     category: str = Field(..., title="Category")
 
 
 class AlgoGetArgsParam(BaseModel):
-    framework: str = Field(..., title="Framework")
     category: str = Field(..., title="Category")
     algo: str = Field(..., title="Algo name")
 

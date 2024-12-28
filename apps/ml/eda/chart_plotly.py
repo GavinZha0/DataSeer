@@ -3,6 +3,10 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from gluonts.dataset.common import ListDataset
+from gluonts.dataset.pandas import PandasDataset
+from gluonts.dataset.split import split
+from gluonts.torch import DeepAREstimator
 # import umap
 from pyod.models.knn import KNN
 from sklearn import manifold
@@ -29,10 +33,12 @@ from sktime.forecasting.arima import AutoARIMA
 from sktime.forecasting.ets import AutoETS
 from sktime.param_est.seasonality import SeasonalityACF
 from sktime.forecasting.trend import PolynomialTrendForecaster
-from sktime.forecasting.fbprophet import Prophet
 import matplotlib.pyplot as plt
 from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, feature_iter_search, feature_auto_detect
+from neuralprophet import NeuralProphet
 
+# has warning: Importing plotly failed. Interactive plots will not work.
+from prophet import Prophet
 
 """
 build chart of statistics
@@ -2049,25 +2055,65 @@ def plt_ts_predict(tsn, cfg, df, fields):
             # prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
             prange = pd.period_range(temp_df.index.max(), periods=future_step + 7, freq=period_unit)
             pred = md.predict(prange)
-        case 'fb':
+        case 'prophet':
+            # growth: 'linear', 'logistic' or 'flat'
+            # seasonality_mode: 'additive' (default) or 'multiplicative'.
             temp_df = ts_df.head(len(ts_df) - 7)
-            md = Prophet(seasonality_mode=season, n_changepoints=int(len(ts_df) / 12),
-                add_country_holidays={"country_name": "US"}).fit(temp_df)
+            idx_name = temp_df.index.name
+            temp_df.reset_index(inplace=True)
+            temp_df = temp_df.rename(columns={idx_name: "ds", vf: "y"})
+            md = Prophet(seasonality_mode=season)
+            # US, CN,
+            # md.add_country_holidays(country_name='US')
+            md.fit(temp_df)
             prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
-            pred = md.predict(prange)
-            pred = pred[vf]
+            future = md.make_future_dataframe(periods=future_step+7, freq=period)
+            pred = md.predict(future).tail(future_step+7)
+            pred.set_index('ds', inplace=True)
+            # trend, yhat
+            pred = pred['yhat']
+        case 'natureprophet':
+            # neuralprophet 0.9.0 requires numpy<2.0.0,>=1.25.0, but you have numpy 2.0.2 which is incompatible.
+            temp_df = ts_df.head(len(ts_df) - 7)
+            idx_name = temp_df.index.name
+            temp_df.reset_index(inplace=True)
+            temp_df = temp_df.rename(columns={idx_name: "ds", vf: "y"})
+            md = NeuralProphet()
+            md.fit(temp_df, freq=period)
+            future = md.make_future_dataframe(df=temp_df, periods=future_step + 7)
+            pred = md.predict(future)
+            pred.set_index('ds', inplace=True)
+            # trend, yhat
+            pred = pred['yhat']
+        case 'deepar':
+            dataset = PandasDataset(ts_df, target=vf)
+            train_set, test_gen = split(dataset, offset=-36)
+            test_set = test_gen.generate_instances(prediction_length=12, windows=3)
+            md = DeepAREstimator(prediction_length=12, freq=period, trainer_kwargs={"max_epochs": 5}).train(train_set)
+            prange = ListDataset([{'start':'1960-01-01', 'target':[400,400,400,400,400,400,400,400,400,400,400,400]}], freq='ME')
+            preds = list(md.predict(test_set.input))
+            pred = preds[2]
+            # pred.plot()
+            # plt.show()
 
+    dt_idx = pred.index
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
     if period.startswith('Y'):
         # show year only (don't show month and day for Y)
-        pred.index = pred.index.strftime('%Y')
+        dt_idx = dt_idx.strftime('%Y')
     elif period.startswith('Q'):
         # convert to period for getting quarters
-        pred.index = pred.index.to_period('Q')
-        pred.index = pred.index.strftime('%Y%q')
+        dt_idx = dt_idx.to_period('Q')
+        dt_idx = dt_idx.strftime('%Y%q')
     elif period.startswith('M'):
-        pred.index = pred.index.strftime('%Y-%m')
+        dt_idx = dt_idx.strftime('%Y-%m')
 
     fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vf], name=vf, mode='lines'))
-    fig.add_trace(go.Scatter(x=pred.index, y=pred.values, name='Prediction', mode='lines'))
+    if isinstance(dt_idx, pd.PeriodIndex):
+        dt_idx = dt_idx.start_time
+
+    if algo == 'deepar':
+            fig.add_trace(go.Scatter(x=dt_idx, y=pred.median, name='Prediction', mode='lines'))
+    else:
+        fig.add_trace(go.Scatter(x=dt_idx, y=pred.values, name='Prediction', mode='lines'))
     return fig

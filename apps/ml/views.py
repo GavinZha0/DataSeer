@@ -4,7 +4,7 @@
 # @Create Time    : 2024/02/12
 # @File           : views.py
 # @desc           : ML API
-
+import ray
 from sqlalchemy import select
 from fastapi import Depends, APIRouter
 from apps.auth.auth import AllUserAuth
@@ -18,8 +18,7 @@ from itertools import groupby
 from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores, \
     extract_frame_versions, extract_ml_datasets
 from .dataset.dataset_main import get_data_stat
-from .eda.eda_main import transform_data, eda_build_chart
-import pandas as pd
+from .eda.eda_main import eda_build_chart
 from .experiment.experiment import exper_reg, exper_unreg, exper_publish, exper_unpublish
 
 app = APIRouter()
@@ -72,31 +71,32 @@ async def exe_dataset(req: schema.DatasetGetOne, auth: Auth = Depends(AllUserAut
     # query dataset and datasource info
     dataset_info = await crud.DatasetDal(auth.db).get_data(req.id, v_ret=RET.SCHEMA, v_where=[model.Dataset.org_id == auth.user.oid])
     src_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
-    #build data loader
+
+    # initialize data loader and load data
     loader = DataLoader(src_info)
-    # load data
-    df, total = await loader.load(dataset_info.content, dataset_info.variable, None)
+    df = await loader.load(dataset_info.content, dataset_info.variable)
     if df is None:
         return SuccessResponse({'total': 0, 'records': [], 'stat': {}})
 
     # get statistics info
+    total = len(df)
     data, stat = await get_data_stat(dataset_info.type, df, None)
     return SuccessResponse({'total': total, 'records': data, 'stat': stat})
 
 
 @app.post("/dataset/stat", summary="Get data stat")
 async def get_dataset_stat(req: schema.DatasetGetStat, auth: Auth = Depends(AllUserAuth())):
-    df: pd.dataframe = None
     # query datasource info
-    src_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id)
-    # build data loader
-    loader = DataLoader(src_info)
-    # load data
-    df, total = await loader.load(req.content, req.variable, None)
+    source_info = await dm_crud.DatasourceDal(auth.db).get_data(req.id)
+
+    # initialize data loader and load data
+    loader = DataLoader(source_info)
+    df = await loader.load(req.content, req.variable)
     if df is None:
         return SuccessResponse({'total': 0, 'records': [], 'stat': {}})
 
     # get statistics info
+    total = len(df)
     data, stat = await get_data_stat(req.type, df, req.limit)
     return SuccessResponse({'total': total, 'records': data, 'stat': stat})
 
@@ -129,19 +129,17 @@ async def build_eda(req: schema.EdaBuildParam, auth: Auth = Depends(AllUserAuth(
     # query dataset and datasource info
     dataset_info = await crud.DatasetDal(auth.db).get_data(req.dataset_id, v_ret=RET.SCHEMA,
                                                            v_where=[model.Dataset.org_id == auth.user.oid])
-    src_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
-    # build data loader
-    loader = DataLoader(src_info)
-    # load data
-    df, total = await loader.load(dataset_info.content, dataset_info.variable, None)
+    source_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
+
+    # initialize data loader and load data
+    loader = DataLoader(source_info, dataset_info)
+    # load and transform data
+    df = await loader.run()
     if df is None:
         return SuccessResponse()
 
-    # transform data
-    transformed_df = await transform_data(df, dataset_info.fields, dataset_info.transform)
     # generate eda chart
-    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, transformed_df, dataset_info.fields)
-
+    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, df, dataset_info.fields)
     return SuccessResponse(json_rsp)
 
 
@@ -174,18 +172,18 @@ async def get_versions(auth: Auth = Depends(AllUserAuth())):
 
 @app.post("/algo/algos", summary="Get Existing algos")
 async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAuth())):
-    algo_json = await extract_algos(params.framework, params.category)
+    algo_json = await extract_algos(params.category)
     return SuccessResponse(algo_json)
 
 @app.post("/algo/args", summary="Get algo args")
 async def get_args(params: schema.AlgoGetArgsParam, auth: Auth = Depends(AllUserAuth())):
-    args_and_doc = await extract_algo_args(params.framework, params.category, params.algo)
+    args_and_doc = await extract_algo_args(params.category, params.algo)
     return SuccessResponse({'records': args_and_doc})
 
 
 @app.post("/algo/scores", summary="Get algo scores")
 async def get_args(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAuth())):
-    algo_scores = await extract_algo_scores(params.framework, params.category)
+    algo_scores = await extract_algo_scores(params.category)
     return SuccessResponse(algo_scores)
 
 

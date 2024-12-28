@@ -54,7 +54,7 @@ class RayReport(Callback):
     def on_trial_result(self, iteration, trials, trial, result, **info):
         self.completed_epochs += 1
         # progress based on total epochs
-        progress = round(self.completed_epochs / self.total_epochs, 2) * 100
+        progress = round(100 * self.completed_epochs / self.total_epochs, 0)
         report = dict(uid=self.user, code=RAY_EPOCH_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id, progress=progress,
                                 epoch=result.get('training_iteration'), params=trial.evaluated_params))
@@ -75,7 +75,7 @@ class RayReport(Callback):
     def on_trial_complete(self, iteration, trials, trial, **info):
         self.completed_trials += 1
         # progress based on total trials
-        progress = round(self.completed_trials / self.total_trials, 2) * 100
+        progress = round(100 * self.completed_trials / self.total_trials, 0)
         report = dict(uid=self.user, code=RAY_TRIAL_REPORT, msg='',
                       data=dict(name=self.name, algoId=self.algo, experId=self.exper, trialId=trial.trial_id,
                                 params=trial.evaluated_params, progress=progress))
@@ -112,7 +112,7 @@ class RayReport(Callback):
             report_data['trials'].append(trial_info)
 
         # success rate
-        report_data['rate'] = 100 - round(failed_trial/len(trials), 2) * 100
+        report_data['rate'] = 100 - round(100 * failed_trial/len(trials), 0)
         print(report)
         RedisClient().feedback(report)
         RedisClient().notify(report)

@@ -7,8 +7,11 @@
 # @desc           : pydantic model
 
 import json
+import re
 from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+
+import execjs
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator, computed_field
 from core.data_types import DatetimeStr
 
 
@@ -36,9 +39,9 @@ class Dataset(BaseModel):
     sourceName: Optional[str] = None
 
 
-    @field_validator('variable', 'transform', 'fields', 'target', mode='after')
+    @field_validator('variable', 'transform', 'fields', mode='after')
     @classmethod
-    def config_validator(cls, v: str) -> list:
+    def fields_validator(cls, v: str) -> list:
         if v is not None and len(v) > 0:
             return json.loads(v)
             # convert string to json
@@ -48,15 +51,39 @@ class Dataset(BaseModel):
         else:
             return v
 
+    @field_validator('target', mode='after')
+    @classmethod
+    def target_validator(cls, v: str) -> list:
+        if v is not None and len(v) > 0:
+            # list-like string without quotes
+            # ex: [aaa,bbb,ccc]
+            vv = re.sub(r'[\[\]]', '', v).split(',')
+            vv = [name.strip() for name in vv]
+            return vv
+        else:
+            return v
+
 
     @model_validator(mode='before')
     @classmethod
-    def validate_all(cls, values):
-        if values.datasource is not None:
+    def validate_all(cls, fields):
+        if fields.datasource is not None:
             # build extra field (calculated field) 'sourceName'
-            values.sourceName = values.datasource.group + '/' + values.datasource.name
-        return values
+            fields.sourceName = fields.datasource.group + '/' + fields.datasource.name
+        return fields
 
+
+    '''
+    # AttributeError: 'Dataset' object has no attribute 'datasource'
+    @computed_field()
+    @property
+    def sourceName(self) -> str|None:
+        if self.datasource is not None:
+            # build extra field (calculated field) 'sourceName'
+            return self.datasource.group + '/' + self.datasource.name
+        else:
+            return None
+    '''
 
 class DatasetGetOne(BaseModel):
     id: int = Field(..., title="Dataset id")
@@ -82,7 +109,7 @@ class DatasetCreate(BaseModel):
 
     @field_validator('variable', 'transform', 'fields', 'target', mode='after')
     @classmethod
-    def config_validator(cls, v: dict) -> str:
+    def fields_validator(cls, v: dict) -> str:
         if v is not None:
             return json.dumps(v)
             # return execjs.eval(v)

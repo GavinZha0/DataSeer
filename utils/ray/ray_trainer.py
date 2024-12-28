@@ -32,7 +32,7 @@ class RayTrainer:
         self.frame = frame.upper()
 
     # train ML algo based on ray and mlflow
-    def train(self, params: dict, train_func, data: Dict):
+    def train(self, params: dict, train_func, data: any):
         match self.frame:
             case 'SKLEARN':
                 return self.trainSk(params, train_func, data)
@@ -41,7 +41,7 @@ class RayTrainer:
 
 
     # train ML algo based on ray and mlflow
-    def trainSk(self, params: dict, train_func, data: Dict):
+    def trainSk(self, params: dict, train_func, data: pd.DataFrame):
         # use AWS S3/minio as artifact repository
         os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
         os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')
