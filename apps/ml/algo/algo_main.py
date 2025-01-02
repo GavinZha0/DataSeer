@@ -15,7 +15,6 @@ from core.crud import RET
 from apps.datamgr import crud as dm_crud
 from apps.ml import crud as ml_crud, schema as ml_schema
 import sklearn
-from sklearn import metrics
 from sklearn.utils import all_estimators
 import sklearn.datasets as skds
 import xgboost as xgb
@@ -59,20 +58,18 @@ async def extract_ml_datasets():
 """
 extract existing algorithms
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
-pytorch category: vision, 
-inno category: inno
+pytorch category: vision, audio, text
+boost category: xgboost, lightgbm, catboost
 """
 async def extract_algos(category: str):
-    # category = 'sklearn.classifier'
-    temp_cat = category.split('.')
-    frame = temp_cat[0].upper()
-    cat = temp_cat[0]
-    if len(temp_cat) > 1:
-        cat = temp_cat[1]
+    # e.g., category = 'sklearn.classifier' or 'boost.xgboost'
+    cat = category.upper()
 
     result = {}
-    if frame == 'SKLEARN':
-        estimators = all_estimators(type_filter=cat)
+    if cat.startswith('SKLEARN'):
+        temp_cat = category.split('.')
+        sub_cat = temp_cat[len(temp_cat) - 1]
+        estimators = all_estimators(type_filter=sub_cat)
         for name, class_ in estimators:
             m_name = class_.__dict__.get('__module__').split(".")[1]
             cls_name = class_.__name__
@@ -81,11 +78,13 @@ async def extract_algos(category: str):
                     result[m_name] = [cls_name]
                 else:
                     result[m_name].append(cls_name)
-    elif frame == 'PYTORCH':
-        if cat == 'custom':
+    elif cat.startswith('PYTORCH'):
+        temp_cat = category.split('.')
+        sub_cat = temp_cat[len(temp_cat) - 1]
+        if cat.endswith('CUSTOM'):
             result['classic'] = ['Convolutional NN', 'Feedforward NN', 'LSTM NN', 'Recurrent NN']
         else:
-            models = torch.hub.list(f'pytorch/{cat}')
+            models = torch.hub.list(f'pytorch/{sub_cat}')
             for md in models:
                 if md.startswith('get_') or md.find('_') < 0:
                     # ex: 'get_weight', 'vgg11'
@@ -146,13 +145,23 @@ async def extract_algos(category: str):
             # add new to ungrouped
             result['misc'] = []
             [result['misc'].append(k) for k in add_list]
-    elif frame == 'CLASSIC':
-        result['GBDT'] = []
-        result['GBDT'].append('XGBoost')
-        result['GBDT'].append('LightGBM')
-        result['GBDT'].append('CatBoost')
+    elif cat.startswith('ANN'):
         result['SOM'] = []
         result['SOM'].append('MiniSOM')
+    elif cat.startswith('BOOST'):
+        if cat.endswith('XGBOOST'):
+            result['root'] = []
+            xgb_models = xgb.__all__
+            [result['root'].append(k) for k in xgb_models if k.startswith('XGB') and k not in ['XGBModel']]
+        elif cat.endswith('LIGHTGBM'):
+            result['root'] = []
+            lgb_models = lightgbm.__all__
+            [result['root'].append(k) for k in lgb_models if k.startswith('LGBM')]
+        elif cat.endswith('CATBOOST'):
+            # catboost 1.2.7 requires numpy<2.0,>=1.16.0, but you have numpy 2.0.2 which is incompatible.
+            result['root'] = []
+            result['root'].append('CatBoostClassifier')
+            result['root'].append('CatBoostRegressor')
 
     # sort result
     result_json = dict(sorted(result.items(), key=operator.itemgetter(0)))
@@ -162,26 +171,29 @@ async def extract_algos(category: str):
 """
 extract arguments of algorithm
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
-pytorch category: vision, 
-inno category: inno
+pytorch category: vision, audio, text
+boost category: xgboost, lightgbm, catboost
 """
 async def extract_algo_args(category: str, algo: str):
-    # category = 'sklearn.classifier'
-    temp_cat = category.split('.')
-    frame = temp_cat[0].upper()
-    cat = temp_cat[0]
-    if len(temp_cat) > 1:
-        cat = temp_cat[1]
+    # e.g., category = 'sklearn.classifier' or 'boost.xgboost'
+    # e.g., algo = 'linear_model.LogisticRegression' or 'XGBClassifier'
+    cat = category.upper()
+
+    temp_algo = algo.split('.')
+    group = temp_algo[0].upper()
+    algorithm = temp_algo[len(temp_algo)-1]
 
     args = []
     algo_func = None
     algo_doc = None
-    if frame == 'SKLEARN':
+    if cat.startswith('SKLEARN'):
         # find algo func from sklearn estimators
         # can be ignored arguments
+        temp_cat = category.split('.')
+        sub_cat = temp_cat[len(temp_cat) - 1]
         ignored = ['estimator', 'verbose', 'n_jobs', 'random_state', 'max_iter']
-        estimators = all_estimators(type_filter=cat)
-        algo_funcs = [class_ for name, class_ in estimators if name == algo]
+        estimators = all_estimators(type_filter=sub_cat)
+        algo_funcs = [class_ for name, class_ in estimators if name == algorithm]
         algo_func = algo_funcs[0]
         if algo_func:
             # cut doc to get parameter description
@@ -195,13 +207,13 @@ async def extract_algo_args(category: str, algo: str):
             if para_idx > 0:
                 # ex: 'Attributes\n --------\n'
                 algo_doc = algo_doc[:para_idx - 20]
-    elif frame == 'PYTORCH':
-        if cat == 'custom':
+    elif cat.startswith('PYTORCH'):
+        if cat.endswith('CUSTOM'):
             return []
         else:
             # can be ignored arguments
             ignored = ['kwargs']
-            algo_func = torchvision.models.get_model_builder(algo)
+            algo_func = torchvision.models.get_model_builder(algorithm)
             if algo_func:
                 # cut doc to get parameter description
                 algo_doc = algo_func.__doc__
@@ -214,14 +226,52 @@ async def extract_algo_args(category: str, algo: str):
                 if para_idx > 0:
                     # ex: '.. autoclass::'
                     algo_doc = algo_doc[:para_idx - 4]
+    elif cat.startswith('BOOST'):
+        # can be ignored arguments
+        ignored = ['kwargs', 'verbosity', 'n_jobs', 'nthread', 'silent', 'eval_metric']
+        if cat.endswith('XGBOOST'):
+            algo_func = getattr(xgb, algorithm)
+            if algo_func:
+                # cut doc to get parameter description
+                algo_doc = algo_func.__doc__
+                para_idx = algo_doc.find('Parameters\n')
+                if para_idx >= 0:
+                    # ex: 'Parameters\n'
+                    algo_doc = algo_doc[para_idx + 11:]
+
+                para_idx = algo_doc.find('Attributes\n')
+                if para_idx > 0:
+                    # ex: 'Attributes\n'
+                    algo_doc = algo_doc[:para_idx - 1]
+        elif cat.endswith('LIGHTGBM'):
+            algo_func = getattr(lightgbm, algorithm)
+            if algo_func:
+                # cut doc to get parameter description
+                algo_doc = algo_func._base_doc
+                para_idx = algo_doc.find('Parameters\n')
+                if para_idx >= 0:
+                    # ex: 'Parameters\n'
+                    algo_doc = algo_doc[para_idx + 11:]
+
+                para_idx = algo_doc.find('Returns\n')
+                if para_idx > 0:
+                    # ex: 'Attributes\n'
+                    algo_doc = algo_doc[:para_idx - 1]
+        elif cat.endswith('CATBOOST'):
+            # to do
+            return []
     else:
         return []
 
     if algo_func:
-        # get arg names and default values of the algo
-        params = inspect.signature(algo_func)
-        args = [dict(name=it.name, default=it.default) for it in list(params.parameters.values())
-                    if (not inspect.isclass(it.default)) and (it.name not in ignored)]
+        if cat.endswith('XGBOOST'):
+            params = algo_func().get_xgb_params()
+            args = [dict(name=key, default=params[key]) for key in params if key not in ignored]
+        else:
+            # get arg names and default values of the algo
+            params = inspect.signature(algo_func)
+            args = [dict(name=it.name, default=it.default) for it in list(params.parameters.values())
+                        if (not inspect.isclass(it.default)) and (it.name not in ignored)]
 
         # get options from doc of algo function
         for it in args:
@@ -240,41 +290,51 @@ async def extract_algo_args(category: str, algo: str):
 
 
 """
-extract arguments of algorithm
+extract metrics of algorithm
 sklearn category: 'classifier', 'regressor', 'transformer', 'cluster'
-pytorch category: vision, 
-classic category: classic
+pytorch category: vision, audio, text
+boost category: xgboost, lightgbm, catboost
 """
-async def extract_algo_scores(category: str):
+async def extract_algo_metrics(category: str, algo: str):
     # silhouette_score, calinski_harabasz_score and davies_bouldin_score can't get from get_scorer_names()
     # they don't need target value to evaluate cluster. all others need.
-    # category = 'sklearn.classifier'
-    temp_cat = category.split('.')
-    frame = temp_cat[0].upper()
-    cat = temp_cat[0]
-    if len(temp_cat) > 1:
-        cat = temp_cat[1]
+    # e.g., category = 'sklearn.classifier' or 'boost.xgboost'
+    # e.g., algo = 'linear_model.LogisticRegression' or 'XGBClassifier'
+    cat = category.upper()
+    temp_algo = algo.split('.')
+    group = temp_algo[0].upper()
+    algorithm = temp_algo[len(temp_algo) - 1]
 
-    scores = dict(clf=[], reg=[], cluster=[])
-    if frame == 'SKLEARN':
-        names = metrics.get_scorer_names()
-        scores['cluster'] = [it for it in names if
+    metrics = dict(clf=[], reg=[], cluster=[])
+    if cat.startswith('SKLEARN'):
+        temp_cat = category.split('.')
+        sub_cat = temp_cat[len(temp_cat) - 1]
+        names = sklearn.metrics.get_scorer_names()
+        metrics['cluster'] = [it for it in names if
                              'rand_' in it or 'info_' in it or '_measure_' in it or 'homogeneity' in it
                              or 'fowlkes' in it or 'completeness' in it]
-        scores['cluster'].insert(0, 'davies_bouldin_score')
-        scores['cluster'].insert(0, 'calinski_harabasz_score')
-        scores['cluster'].insert(0, 'silhouette_score')
-        scores['regressor'] = [it for it in names if
+        metrics['cluster'].insert(0, 'davies_bouldin_score')
+        metrics['cluster'].insert(0, 'calinski_harabasz_score')
+        metrics['cluster'].insert(0, 'silhouette_score')
+        metrics['regressor'] = [it for it in names if
                          '_mean_' in it or '_variance' in it or '_error' in it or 'r2' in it or 'd2_' in it]
-        scores['classifier'] = [it for it in names if it not in scores['cluster'] and it not in scores['regressor']]
-    elif frame == 'PYTORCH':
-        scores['vision'] = []
-        scores['audio'] = []
-        scores['custom'] = []
+        metrics['classifier'] = [it for it in names if it not in metrics['cluster'] and it not in metrics['regressor']]
+        return metrics[sub_cat]
+    elif cat.startswith('BOOST'):
+        if cat.endswith('XGBOOST'):
+            if 'Classifier' in algorithm:
+                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'error', 'merror', 'logloss', 'mlogloss', 'auc', 'aucpr', 'pre', 'ndcg', 'map']
+            elif 'Regressor' in algorithm:
+                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'logloss', 'ndcg', 'map']
+            elif 'Ranker' in algorithm:
+                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'logloss', 'auc', 'aucpr', 'pre', 'ndcg']
+    elif cat.endswith('PYTORCH'):
+        metrics['vision'] = []
+        metrics['audio'] = []
+        metrics['custom'] = []
     else:
-        scores[cat] = []
+        return []
 
-    return scores[cat]
 
 """
 build train pipeline
@@ -286,12 +346,13 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     algo_info = await ml_crud.AlgoDal(db).get_data(algo_id, v_ret=RET.SCHEMA)
     dataset_info = await ml_crud.DatasetDal(db).get_data(algo_info.dataCfg.get('datasetId'), v_ret=RET.SCHEMA)
     source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info.sourceId, v_ret=RET.SCHEMA)
-    targets = [field['name'] for field in dataset_info.fields if 'target' in field and 'omit' not in field]
+    num_uniques = [field['nunique'] for field in dataset_info.fields if 'target' in field and 'omit' not in field]
 
     # build parameters
     params = await build_params(algo_info, user)
-    # uu_label is the target values for supervised learning
-    params['tune_param']['uu_label'] = targets
+    if num_uniques:
+        # num_class for classifier of XGBoost
+        params['tune_param']['num_class'] = num_uniques[0]
 
     ready = await build_ray_trainable(algo_info.category, algo_info.srcCode, params)
     if ready is False:
@@ -376,6 +437,8 @@ async def build_params(algo: ml_schema.Algo, user: dict):
         if params['score'] and params['threshold']:
             # These metrics are assumed to be increasing
             params['stop'][params['score']] = params['threshold']
+        if params['epochs']:
+            params['stop']['training_iteration'] = params['epochs']
 
         # tune parameters
         tuner['epochs'] = algo.trainCfg.get('epochs', 1)
@@ -413,7 +476,6 @@ async def build_params(algo: ml_schema.Algo, user: dict):
                     values = execjs.eval(value)
                     if len(values) > 0:
                         tuner[key] = ray.tune.choice(values)
-
                 else:
                     # 8.5 or 'gini'
                     if '.' in value:

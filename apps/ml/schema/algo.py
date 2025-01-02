@@ -57,7 +57,7 @@ class AlgoGetParam(BaseModel):
     category: str = Field(..., title="Category")
 
 
-class AlgoGetArgsParam(BaseModel):
+class AlgoGetAlgoParam(BaseModel):
     category: str = Field(..., title="Category")
     algo: str = Field(..., title="Algo name")
 

@@ -1,5 +1,7 @@
 import io
 import base64
+
+import numpy as np
 import pandas as pd
 import sklearn
 import torch
@@ -46,6 +48,17 @@ async def get_data_stat(type: str, df: any, limit: int = None):
             stat = df.describe(include='all').T
             stat['type'] = [it.name for it in df.dtypes]
             stat['missing'] = df.isnull().sum().values
+            # get unique values for each column
+            stat['unique'] = {}
+            stat['nunique'] = {}
+            for col in df.columns:
+                stat.loc[col, 'nunique'] = df[col].nunique()
+                if stat.loc[col, 'nunique'] < 20:
+                    if df[col].dtypes in ['int64']:
+                        stat.at[col, 'unique'] = np.sort(df[col].unique())
+                    elif df[col].dtypes in ['object']:
+                        stat.at[col, 'unique'] = np.sort(df[col].dropna().unique().astype('str').tolist()).tolist()
+
             stat_var = df.var(numeric_only=True).to_frame('variance')
             stat = pd.merge(stat, stat_var, left_index=True, right_index=True, how='outer')
             stat = stat.reset_index().rename(columns={"index": "name", "25%": "pct25", "50%": "median", "75%": "pct75"})

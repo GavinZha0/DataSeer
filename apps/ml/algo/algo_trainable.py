@@ -1,15 +1,18 @@
 import os.path
 import string
+
+from mlflow import xgboost
+
 from config.settings import TEMP_DIR
 
-sklearn_library = '''
+mlflow_library = '''
 import ray
 import mlflow
 import matplotlib
 from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME, MLFLOW_USER
 '''
 
-sklearn_setup = '''
+mlflow_setup = '''
     mlflow.set_tracking_uri(config.get('tracking_url'))
     mlflow.set_experiment(experiment_id=config.get('exper_id'))
     mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
@@ -165,15 +168,15 @@ class RayTrainable:
 
 
 async def build_ray_trainable(category: str, code: str, params: dict):
-    # category = 'sklearn.classifier'
-    temp_cat = category.split('.')
-    frame = temp_cat[0].upper()
+    # e.g., category = 'sklearn.classifier' or 'boost.xgboost'
+    # e.g., algo = 'linear_model.LogisticRegression' or 'XGBClassifier'
+    cat = category.upper()
     trainable_code = ''
 
-    if frame == 'SKLEARN':
-        trainable_code = code.replace('import ray', sklearn_library)
-        trainable_code = trainable_code.replace('train_y = val_x = val_y = None', sklearn_setup)
-    elif frame == 'PYTORCH':
+    if cat.startswith('SKLEARN') or cat.startswith('BOOST'):
+        trainable_code = code.replace('import ray', mlflow_library)
+        trainable_code = trainable_code.replace('train_y = val_x = val_y = None', mlflow_setup)
+    elif cat.startswith('PYTORCH'):
         trainable_code = pytorch_tpl.substitute({'PL_MODULE_CODE': code, 'PL_MODULE_CLASS': params['cls_name'][0]})
 
     try:

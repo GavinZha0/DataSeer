@@ -15,7 +15,7 @@ from apps.datamgr import crud as dm_crud
 from utils.response import SuccessResponse, ErrorResponse
 from apps.auth.token import Auth
 from itertools import groupby
-from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_scores, \
+from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, extract_algo_metrics, \
     extract_frame_versions, extract_ml_datasets
 from .dataset.dataset_main import get_data_stat
 from .eda.eda_main import eda_build_chart
@@ -176,14 +176,14 @@ async def get_algos(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAut
     return SuccessResponse(algo_json)
 
 @app.post("/algo/args", summary="Get algo args")
-async def get_args(params: schema.AlgoGetArgsParam, auth: Auth = Depends(AllUserAuth())):
+async def get_args(params: schema.AlgoGetAlgoParam, auth: Auth = Depends(AllUserAuth())):
     args_and_doc = await extract_algo_args(params.category, params.algo)
     return SuccessResponse({'records': args_and_doc})
 
 
-@app.post("/algo/scores", summary="Get algo scores")
-async def get_args(params: schema.AlgoGetParam, auth: Auth = Depends(AllUserAuth())):
-    algo_scores = await extract_algo_scores(params.category)
+@app.post("/algo/metrics", summary="Get algo metrics")
+async def get_metrics(params: schema.AlgoGetAlgoParam, auth: Auth = Depends(AllUserAuth())):
+    algo_scores = await extract_algo_metrics(params.category, params.algo)
     return SuccessResponse(algo_scores)
 
 
