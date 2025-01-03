@@ -14,6 +14,7 @@ import ray
 import ray.tune.search as search
 import ray.tune.schedulers as schedule
 import torch
+from ray.tune.stopper import TrialPlateauStopper
 from torchvision.transforms import v2 as ttv2
 import torchaudio
 import torchvision
@@ -29,7 +30,7 @@ from sklearn import feature_extraction as fe
 import xgboost as xgb
 import mysql.connector as ct
 from config import settings
-from config.settings import TEMP_DIR
+from config.settings import TEMP_DIR, RAY_NUM_GPU
 from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 from ray.air import ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
@@ -858,28 +859,54 @@ class RayPipeline:
                           user_id=params['user_id'], args='|'.join(params['args']))
         params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
                                                       artifact_location=params['artifact_location'])
-
         params['tune_param']['exper_id'] = params['exper_id']
 
         # create progress report
         progressRpt = RayReport(params)
         progressRpt.jobProgress(JOB_PROGRESS_START)
 
-        if params.get('gpu', False):
-            tune_func = tune.with_resources(tune.with_parameters(train_func, data=dataset), resources={"gpu": 1})
+        if params['gpu'] and RAY_NUM_GPU > 0:
+            # tune function with resources
+            tune_func = tune.with_resources(tune.with_parameters(train_func, data=dataset), resources={"gpu": RAY_NUM_GPU})
         else:
             tune_func = tune.with_parameters(train_func, data=dataset)
 
+        early_stopper = None
+        scheduler_cfg = None
+        if params['metrics'] and params['threshold']:
+            # stop when the metric mets the threshold
+            if params['metrics'] in ['accuracy', 'f1']:
+                # The bigger the better. mode is fixed 'max' in RunConfig.stop
+                early_stopper = {f"validation_0-{params['metrics']}" : params['threshold'], "training_iteration": params['epochs']}
+                if params['timeout']:
+                    early_stopper['time_total_s'] = params['timeout'] * 60
+            else:
+                # The smaller the better. define a custom TrialPlateauStopper with mode 'min'
+                early_stopper = TrialPlateauStopper(metric=f"validation_0-{params['metrics']}", mode="min",
+                                                    metric_threshold=params['threshold'])
+                # metric: is mandatory. like 'validation_0-rmse' for xgboost
+                # the main purpose is to stop the trial when max_t reaches the max epochs
+                scheduler_cfg = schedule.ASHAScheduler(max_t=params['epochs'], grace_period=3,
+                                                       metric=f"validation_0-{params['metrics']}", mode='min')
+        else:
+            early_stopper = {"training_iteration": params['epochs']}
+            if params['timeout']:
+                early_stopper['time_total_s'] = params['timeout'] * 60
+
+
+        # time_budget_s: stop training when time budget (in seconds) has elapsed for a trail
+        # max_t: stop training when epoch reaches max_t
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3),
-                                   # scheduler=schedule.ASHAScheduler(max_t=5, metric="eval-logloss", mode="min"),
-                                   time_budget_s=params['timeout'] * 60 * params['trials'] if params.get(
-                                       'timeout') else None)
+                                   scheduler=scheduler_cfg,
+                                   time_budget_s=params['timeout'] * 60 if params['timeout'] else None)
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
-        run_cfg = train.RunConfig(name=params['exper_name'], stop=params.get('stop'),
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                  stop=early_stopper,
                                   verbose=get_air_verbosity(AirVerbosity.DEFAULT),
                                   log_to_file=False, storage_path=TEMP_DIR + '/tune/',
+                                  failure_config=train.FailureConfig(fail_fast=True),
                                   checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
                                   callbacks=[progressRpt])
 

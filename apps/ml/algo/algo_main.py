@@ -150,9 +150,14 @@ async def extract_algos(category: str):
         result['SOM'].append('MiniSOM')
     elif cat.startswith('BOOST'):
         if cat.endswith('XGBOOST'):
-            result['root'] = []
             xgb_models = xgb.__all__
-            [result['root'].append(k) for k in xgb_models if k.startswith('XGB') and k not in ['XGBModel']]
+            for k in xgb_models:
+                if k == 'XGBClassifier' or k == 'XGBRFClassifier':
+                    result[k] = ['binary:logistic', 'binary:logitraw', 'binary:hinge', 'multi:softmax', 'multi:softprob']
+                elif k == 'XGBRegressor' or k == 'XGBRFRegressor':
+                    result[k] = ['reg:squarederror', 'reg:squaredlogerror', 'reg:logistic', 'reg:pseudohubererror', 'reg:absoluteerror', 'reg:quantileerror', 'reg:gamma', 'reg:tweedie', 'count:poisson']
+                elif k == 'XGBRanker':
+                    result[k] = ['rank:pairwise', 'rank:ndcg', 'rank:map']
         elif cat.endswith('LIGHTGBM'):
             result['root'] = []
             lgb_models = lightgbm.__all__
@@ -163,8 +168,8 @@ async def extract_algos(category: str):
             result['root'].append('CatBoostClassifier')
             result['root'].append('CatBoostRegressor')
 
-    # sort result
-    result_json = dict(sorted(result.items(), key=operator.itemgetter(0)))
+    # sort result by key and ignore case
+    result_json = dict(sorted(result.items(), key=lambda x: x[0].lower()))
     return result_json
 
 
@@ -180,7 +185,7 @@ async def extract_algo_args(category: str, algo: str):
     cat = category.upper()
 
     temp_algo = algo.split('.')
-    group = temp_algo[0].upper()
+    group = temp_algo[0]
     algorithm = temp_algo[len(temp_algo)-1]
 
     args = []
@@ -227,10 +232,13 @@ async def extract_algo_args(category: str, algo: str):
                     # ex: '.. autoclass::'
                     algo_doc = algo_doc[:para_idx - 4]
     elif cat.startswith('BOOST'):
-        # can be ignored arguments
-        ignored = ['kwargs', 'verbosity', 'n_jobs', 'nthread', 'silent', 'eval_metric']
+        # ignored arguments
+        # objective is in algoName (XGBClassifier.multi:softmax)
+        # eval_metrics is in trainCfg (metrics='logloss')
+        # device is in trainCfg (gpu=True)
+        ignored = ['kwargs', 'verbosity', 'n_jobs', 'nthread', 'silent', 'objective', 'eval_metric', 'device', 'validate_parameters', 'interaction_constraints']
         if cat.endswith('XGBOOST'):
-            algo_func = getattr(xgb, algorithm)
+            algo_func = getattr(xgb, group)
             if algo_func:
                 # cut doc to get parameter description
                 algo_doc = algo_func.__doc__
@@ -302,7 +310,7 @@ async def extract_algo_metrics(category: str, algo: str):
     # e.g., algo = 'linear_model.LogisticRegression' or 'XGBClassifier'
     cat = category.upper()
     temp_algo = algo.split('.')
-    group = temp_algo[0].upper()
+    group = temp_algo[0]
     algorithm = temp_algo[len(temp_algo) - 1]
 
     metrics = dict(clf=[], reg=[], cluster=[])
@@ -322,12 +330,24 @@ async def extract_algo_metrics(category: str, algo: str):
         return metrics[sub_cat]
     elif cat.startswith('BOOST'):
         if cat.endswith('XGBOOST'):
-            if 'Classifier' in algorithm:
-                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'error', 'merror', 'logloss', 'mlogloss', 'auc', 'aucpr', 'pre', 'ndcg', 'map']
-            elif 'Regressor' in algorithm:
-                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'logloss', 'ndcg', 'map']
-            elif 'Ranker' in algorithm:
-                return ['rmse', 'rmsle', 'mae', 'mape', 'mphe', 'logloss', 'auc', 'aucpr', 'pre', 'ndcg']
+            # sklearn.metrics can be used by xgboost when use sklearn API
+            # all xgboost metrics should be covert to lower case when they are applied
+            if 'Classifier' in group:
+                # LogLoss: Logistic Loss, Negative Log-Likelihood or Cross-Entropy Loss(负对数损失), mlogloss: Multiclass Log Loss
+                # auc: Area under the Curve, aucpr: Area Under the Precision-Recall Curve, map: Mean Average Precision(平均精确度)
+                if 'binary' in algorithm:
+                    return ['logloss', 'error', 'auc', 'acupr', 'map']
+                else: # 'multi'
+                    return ['merror', 'mlogloss', 'auc', 'aucpr', 'map']
+            elif 'Regressor' in group:
+                # MAE: Mean Absolute Error(平均绝对值误差), MPE: Mean Percentage Error(平均百分比误差), MSPE:Mean Squared Prediction Error(均方百分比误差),
+                # MAPE: Mean Absolute Pencentage Error(平均绝对百分比误差), MPHE: Mean Pseudo Huber Error
+                # MSE: Mean Squared Error(均方误差), RMSE: Root Mean Squared Error(均方根误差), RMSLE: Root Mean Squared Logarithmic Error(均方根对数误差)
+                # NDCG: Normalized Discounted Cumulative Gain, MAP: Mean Average Precision
+                return ['mae', 'mape', 'mphe', 'rmse', 'rmsle', 'logloss', 'poisson-nloglik', 'gamma-nloglik', 'gamma-deviance', 'cox-nloglik', 'tweedie-nloglik']
+            elif 'Ranker' in group:
+                # pre: Precision at k, ndcg: Normalized Discounted Cumulative Gain(归一化折损累计增益)
+                return ['auc', 'pre', 'ndcg' 'map']
     elif cat.endswith('PYTORCH'):
         metrics['vision'] = []
         metrics['audio'] = []
@@ -422,26 +442,14 @@ async def build_params(algo: ml_schema.Algo, user: dict):
     if algo.trainCfg:
         params['gpu'] = algo.trainCfg.get('gpu', False)
         params['trials'] = algo.trainCfg.get('trials', 1)
-        params['timeout'] = algo.trainCfg.get('timeout')
         params['epochs'] = algo.trainCfg.get('epochs', 1)
-        params['score'] = algo.trainCfg.get('score', None)
+        params['timeout'] = algo.trainCfg.get('timeout')
+        params['metrics'] = algo.trainCfg.get('metrics', None)
         params['threshold'] = algo.trainCfg.get('threshold', None)
-
-        # early stop
-        params['stop'] = dict()
-        if params['timeout']:
-            # timeout is minute per trial
-            # convert to second for early stop
-            # 'time_total_s' is fixed name of ray
-            params['stop']['time_total_s'] = params['timeout'] * 60
-        if params['score'] and params['threshold']:
-            # These metrics are assumed to be increasing
-            params['stop'][params['score']] = params['threshold']
-        if params['epochs']:
-            params['stop']['training_iteration'] = params['epochs']
-
         # tune parameters
-        tuner['epochs'] = algo.trainCfg.get('epochs', 1)
+        tuner['epochs'] = params['epochs']
+        # for xgboost
+        tuner['device'] = 'cuda' if params['gpu'] else 'cpu'
 
         # search space based on parameters
         if algo.trainCfg.get('params'):
