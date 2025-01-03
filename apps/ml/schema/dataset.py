@@ -28,6 +28,7 @@ class Dataset(BaseModel):
     fields: str = Field(..., title="Field info")
     transform: Optional[str] = Field(None, title="Transform")
     f_count: Optional[int] = Field(None, title="Feature count")
+    volume: Optional[int] = Field(None, title="Data volume")
     target: Optional[str] = Field(None, title="Target field")
     public: bool = Field(False, title="Is public")
     sourceId: int = Field(..., title="Datasource id", alias='source_id')

@@ -784,8 +784,6 @@ class RayPipeline:
         # os.environ["WORLD_SIZE"] = '1'
         # os.environ["RANK"] = '0'
 
-        params['tune_param']['dist'] = True
-
         # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
         exper_tags = dict(org_id=params['org_id'], algo_id=params['algo_id'], algo_name=params['algo_name'],
                           user_id=params['user_id'], args='|'.join(params['args']))
@@ -793,22 +791,40 @@ class RayPipeline:
                                                       artifact_location=params['artifact_location'])
 
         params['tune_param']['exper_id'] = params['exper_id']
+        params['tune_param']['dist'] = True
 
         # create progress report
         progressRpt = RayReport(params)
         progressRpt.jobProgress(JOB_PROGRESS_START)
 
+        if params['metrics'] and params['threshold']:
+            # stop when the metric mets the threshold
+            if params['metrics'] in ['accuracy', 'f1']:
+                # The bigger the better. mode is fixed 'max' in RunConfig.stop
+                early_stopper = {params['metrics']: params['threshold'], "training_iteration": params['epochs']}
+                if params['timeout']:
+                    early_stopper['time_total_s'] = params['timeout'] * 60
+            else:
+                # The smaller the better. define a custom TrialPlateauStopper with mode 'min'
+                early_stopper = TrialPlateauStopper(metric=params['metrics'], mode="min",
+                                                    metric_threshold=params['threshold'])
+        else:
+            early_stopper = {"training_iteration": params['epochs']}
+            if params['timeout']:
+                early_stopper['time_total_s'] = params['timeout'] * 60
+
         # Configure computation resources
-        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params.get('gpu', False))
+        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params['gpu'])
         torch_cfg = TorchConfig(backend="gloo")
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
         # earlystop will cause run.status is still running and end_time will be null
-        tune_cfg = tune.TuneConfig(num_samples=params['trials'],
-                                   search_alg=search.BasicVariantGenerator(max_concurrent=3))
-        run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                  stop=early_stopper,
                                   checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
-                                  log_to_file=False, storage_path=TEMP_DIR + '/tune/',
+                                  failure_config=train.FailureConfig(fail_fast=True),
+                                  log_to_file=False,
+                                  storage_path=TEMP_DIR + '/tune/',
                                   callbacks=[progressRpt])
 
         tuner = TorchTrainer(
@@ -871,7 +887,6 @@ class RayPipeline:
         else:
             tune_func = tune.with_parameters(train_func, data=dataset)
 
-        early_stopper = None
         scheduler_cfg = None
         if params['metrics'] and params['threshold']:
             # stop when the metric mets the threshold

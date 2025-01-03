@@ -366,7 +366,7 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     algo_info = await ml_crud.AlgoDal(db).get_data(algo_id, v_ret=RET.SCHEMA)
     dataset_info = await ml_crud.DatasetDal(db).get_data(algo_info.dataCfg.get('datasetId'), v_ret=RET.SCHEMA)
     source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info.sourceId, v_ret=RET.SCHEMA)
-    num_uniques = [field['nunique'] for field in dataset_info.fields if 'target' in field and 'omit' not in field]
+    num_uniques = [field['nunique'] for field in dataset_info.fields if 'target' in field and 'nunique' in field]
 
     # build parameters
     params = await build_params(algo_info, user)

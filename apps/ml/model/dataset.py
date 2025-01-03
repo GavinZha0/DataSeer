@@ -29,6 +29,7 @@ class Dataset(BaseDbModel):
     fields: Mapped[str] = mapped_column(Text, comment="Field info")
     transform: Mapped[Optional[str]] = mapped_column(Text, comment="Transform")
     f_count: Mapped[Optional[int]] = mapped_column(Integer, comment="feature count")
+    volume: Mapped[Optional[int]] = mapped_column(Integer, comment="data volume")
     target: Mapped[Optional[str]] = mapped_column(Text, comment="target field")
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Is public")
 
