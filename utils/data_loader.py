@@ -207,7 +207,7 @@ class DataLoader:
     """
     async def transform(self, df: pd.DataFrame, fields: any):
         match self.data_type:
-            case 'DATA':
+            case 'DATA' | 'TIMESERIES':
                 return self.transTabular(df, fields)
             case 'IMAGE':
                 return self.transTorch(df, fields)

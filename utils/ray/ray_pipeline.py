@@ -225,7 +225,7 @@ class RayPipeline:
     # transform data based on dataset field config
     def transform(self, ds: ray.data.Dataset):
         match self.data_type:
-            case 'DATA':
+            case 'DATA' | 'TIMESERIES':
                 # tabular data transformation based on RAY Dataset
                 return self.trans_data(ds)
             case 'IMAGE':
@@ -371,34 +371,15 @@ class RayPipeline:
                 case 'l2':
                     df[[field_name]] = pp.Normalizer(norm='l2').fit_transform(df[[field_name]])
 
-        ray_ds = None
         shuffle = self.algo_info.dataCfg.get('shuffle', False)
         ratio = self.algo_info.dataCfg.get('evalRatio', None)
-        if ratio == 0:
-            ratio = None
-
-        if self.algo_cat.startswith('SKLEARN') or self.algo_cat.startswith('BOOST'):
-            # shuffle and split data then build a dict of ray Dataset
-            if targetFields:
-                train_x, val_x, train_y, val_y = train_test_split(df[featureFields], df[targetFields],
-                                                                  test_size=ratio, shuffle=shuffle)
-                ray_ds = dict(train_x=ray.data.from_pandas(train_x), val_x=ray.data.from_pandas(val_x),
-                              train_y=ray.data.from_pandas(train_y), val_y=ray.data.from_pandas(val_y))
-            else:
-                train_x, val_x = train_test_split(df[featureFields], test_size=ratio, shuffle=shuffle)
-                ray_ds = dict(train_x=ray.data.from_pandas(train_x), val_x=ray.data.from_pandas(val_x))
-        elif self.algo_cat.startswith('PYTORCH'):
-            # pandas Dataframe -> torh tensor Dataset -> ray Dataset -> shuffle and split
-            if targetFields:
-                torch_ds = torch.utils.data.TensorDataset(torch.Tensor(df[featureFields].values),
-                                                          torch.LongTensor(df[targetFields].to_numpy().ravel()))
-            else:
-                torch_ds = torch.utils.data.TensorDataset(torch.Tensor(df[featureFields].values))
-            # Error converting data to Arrow: [(tensor([3.5000, 5.1000, 0.2000, 1.4000]), tensor(0))
-            ds = ray.data.from_torch(torch_ds)
-            train_ds, val_ds = ds.train_test_split(test_size=ratio, shuffle=shuffle)
-            ray_ds = dict(train_set=train_ds, val_set=val_ds)
-
+        if ratio != 0 and ratio is not None:
+            train_set, val_set = train_test_split(df, test_size=ratio, shuffle=shuffle)
+            ray_ds = dict(train=ray.data.from_pandas(train_set), validation=ray.data.from_pandas(val_set))
+        elif shuffle:
+            ray_ds = dict(train=ray.data.from_pandas(df).random_shuffle())
+        else:
+            ray_ds = dict(train=ray.data.from_pandas(df))
         # return a dict of ray Dataset
         return ray_ds
 
@@ -487,7 +468,7 @@ class RayPipeline:
         if ratio == 0:
             ratio = None
         train_ds, val_ds = dataset.train_test_split(test_size=ratio, shuffle=shuffle)
-        ray_ds = dict(train_set=train_ds, val_set=val_ds)
+        ray_ds = dict(train=train_ds, validation=val_ds)
         return ray_ds
 
     # get image transforms based on config
@@ -548,7 +529,7 @@ class RayPipeline:
         if self.algo_cat.startswith('SKLEARN'):
             return self.trainSklearn(params, train_func, dataset)
         elif self.algo_cat.startswith('PYTORCH'):
-            if self.data_type == 'DATA':
+            if self.data_type in ['DATA', 'TIMESERIES']:
                 return self.trainTorchData(params, train_func, dataset)
             elif self.data_type == 'IMAGE':
                 return self.trainTorchImage(params, train_func, dataset)
@@ -730,28 +711,32 @@ class RayPipeline:
         progressRpt.jobProgress(JOB_PROGRESS_START)
 
         # Configure computation resources
-        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params.get('gpu', False))
+        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params['gpu'])
         torch_cfg = TorchConfig(backend="gloo")
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
         # earlystop will cause run.status is still running and end_time will be null
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3))
-        run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                  # stop=params.get('stop'),
                                   checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
                                   log_to_file=False, storage_path=TEMP_DIR + '/tune/',
                                   callbacks=[progressRpt])
 
-        tuner = TorchTrainer(
+        # dataset: {train:[], validation:[]}
+        trainer = TorchTrainer(
             train_func,
-            train_loop_config=params['tune_param'],
             scaling_config=scaling_cfg,
-            run_config=run_cfg,
             torch_config=torch_cfg,
             datasets=dataset,
-            dataset_config=ray.train.DataConfig(datasets_to_split=['train_set'])
+            dataset_config=ray.train.DataConfig(datasets_to_split=['train'])
         )
 
+        tuner = tune.Tuner(trainable=trainer,
+                           tune_config=tune_cfg,
+                           run_config=run_cfg,
+                           param_space={"train_loop_config": params['tune_param']})
 
         try:
             # start train......
@@ -816,6 +801,8 @@ class RayPipeline:
         # Configure computation resources
         scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params['gpu'])
         torch_cfg = TorchConfig(backend="gloo")
+        tune_cfg = tune.TuneConfig(num_samples=params['trials'],
+                                   search_alg=search.BasicVariantGenerator(max_concurrent=3))
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
         # earlystop will cause run.status is still running and end_time will be null
@@ -827,15 +814,18 @@ class RayPipeline:
                                   storage_path=TEMP_DIR + '/tune/',
                                   callbacks=[progressRpt])
 
-        tuner = TorchTrainer(
+        trainer = TorchTrainer(
             train_func,
-            train_loop_config=params['tune_param'],
             scaling_config=scaling_cfg,
-            run_config=run_cfg,
             torch_config=torch_cfg,
             datasets=dataset,
-            dataset_config=ray.train.DataConfig(datasets_to_split=['train_set'])
+            dataset_config=ray.train.DataConfig(datasets_to_split=['train'])
         )
+
+        tuner = tune.Tuner(trainable=trainer,
+                           tune_config=tune_cfg,
+                           run_config=run_cfg,
+                           param_space={"train_loop_config": params['tune_param']})
 
         try:
             # start train......

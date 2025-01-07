@@ -7,8 +7,11 @@ import execjs
 import ray
 import mlflow
 import torch
+import torchmetrics
 import torchvision
 from sqlalchemy.ext.asyncio import AsyncSession
+from torch import nn
+
 from apps.ml.algo.algo_trainable import build_ray_trainable
 from config import settings
 from core.crud import RET
@@ -82,7 +85,7 @@ async def extract_algos(category: str):
         temp_cat = category.split('.')
         sub_cat = temp_cat[len(temp_cat) - 1]
         if cat.endswith('CUSTOM'):
-            result['classic'] = ['Convolutional NN', 'Feedforward NN', 'LSTM NN', 'Recurrent NN']
+            result['root'] = ['CNN', 'GRU', 'LSTM', 'MLP', 'RNN']
         else:
             models = torch.hub.list(f'pytorch/{sub_cat}')
             for md in models:
@@ -214,7 +217,37 @@ async def extract_algo_args(category: str, algo: str):
                 algo_doc = algo_doc[:para_idx - 20]
     elif cat.startswith('PYTORCH'):
         if cat.endswith('CUSTOM'):
-            return []
+            if algorithm in ['RNN', 'GRU', 'LSTM']:
+                algo_func = getattr(nn, algorithm)
+                if algo_func:
+                    # cut doc to get parameter description
+                    algo_doc = algo_func.__doc__
+                    para_idx = algo_doc.find('Args:\n')
+                    if para_idx >= 0:
+                        # ex: 'Args:\n'
+                        algo_doc = algo_doc[para_idx + 5:]
+
+                    para_idx = algo_doc.find('Attributes:\n')
+                    if para_idx > 0:
+                        algo_doc = algo_doc[:para_idx - 4]
+            arguments = {}
+            arguments['MLP']=[dict(name='input_size', default=1), dict(name='output_size', default=1)]
+            arguments['RNN'] = [dict(name='input_size', default=1), dict(name='output_size', default=1),
+                                dict(name='hidden_size', default=8), dict(name='num_layers', default=1),
+                                dict(name='bias', default=True), dict(name='batch_first', default=False),
+                                dict(name='dropout', default=0.0), dict(name='bidirectional', default=False),
+                                dict(name='nonlinearity', default='tanh')]
+            arguments['GRU'] = [dict(name='input_size', default=1), dict(name='output_size', default=1),
+                                dict(name='num_layers', default=1), dict(name='bias', default=True),
+                                dict(name='batch_first', default=False), dict(name='dropout', default=0.0),
+                                dict(name='bidirectional', default=False)]
+            arguments['LSTM'] = [dict(name='input_size', default=1), dict(name='hidden_size', default=8),
+                    dict(name='num_layers', default=1), dict(name='bias', default=True),
+                    dict(name='batch_first', default=False), dict(name='dropout', default=0.0),
+                    dict(name='bidirectional', default=False), dict(name='proj_size', default=0),
+                    dict(name='seq_len', default=1), dict(name='gap_len', default=1),
+                    dict(name='output_size', default=1)]
+            return dict(algo=algo, args=arguments[algorithm], doc=algo_doc)
         else:
             # can be ignored arguments
             ignored = ['kwargs']
@@ -348,10 +381,21 @@ async def extract_algo_metrics(category: str, algo: str):
             elif 'Ranker' in group:
                 # pre: Precision at k, ndcg: Normalized Discounted Cumulative Gain(归一化折损累计增益)
                 return ['auc', 'pre', 'ndcg' 'map']
-    elif cat.endswith('PYTORCH'):
-        metrics['vision'] = []
-        metrics['audio'] = []
-        metrics['custom'] = []
+    elif cat.startswith('PYTORCH'):
+        if cat.endswith('IMAGE'):
+            return [torchmetrics.image.__all__]
+        elif cat.endswith('AUDIO'):
+            return [torchmetrics.audio.__all__]
+        elif cat.endswith('TEXT'):
+            return [torchmetrics.text.__all__]
+        elif cat.endswith('CLASSIFICATION'):
+            return [torchmetrics.classification.__all__]
+        elif cat.endswith('REGRESSION'):
+            return [torchmetrics.regression.__all__]
+        elif cat.endswith('DETECTION'):
+            return [torchmetrics.detection.__all__]
+        else:
+            return nn.modules.loss.__all__
     else:
         return []
 
@@ -367,6 +411,7 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     dataset_info = await ml_crud.DatasetDal(db).get_data(algo_info.dataCfg.get('datasetId'), v_ret=RET.SCHEMA)
     source_info = await dm_crud.DatasourceDal(db).get_data(dataset_info.sourceId, v_ret=RET.SCHEMA)
     num_uniques = [field['nunique'] for field in dataset_info.fields if 'target' in field and 'nunique' in field]
+    targets = [field['name'] for field in dataset_info.fields if 'target' in field and 'omit' not in field]
 
     # build parameters
     params = await build_params(algo_info, user)
@@ -374,7 +419,11 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
         # num_class for classifier of XGBoost
         params['tune_param']['num_class'] = num_uniques[0]
 
-    ready = await build_ray_trainable(algo_info.category, algo_info.srcCode, params)
+    if targets:
+        # target names
+        params['tune_param']['targets'] = targets
+
+    ready = await build_ray_trainable(algo_info.category, algo_info.algoName, algo_info.srcCode, params)
     if ready is False:
         return False
 
@@ -437,7 +486,7 @@ async def build_params(algo: ml_schema.Algo, user: dict):
     tuner = params['tune_param']
 
     if algo.dataCfg:
-        tuner['batch'] = algo.dataCfg.get('batchSize', 32)
+        tuner['batch_size'] = algo.dataCfg.get('batchSize', 1)
 
     if algo.trainCfg:
         params['gpu'] = algo.trainCfg.get('gpu', False)

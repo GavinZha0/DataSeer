@@ -813,8 +813,19 @@ def plt_stat_outlier(cfg, df, fields):
     if cfg.get('d3'):
         dim = 3
 
-    if dim > len(num_fields):
-        return None
+    if len(num_fields)==1:
+        date_fields = [field['name'] for field in fields if field['attr'] == 'date' or 'timeline' in field]
+        df.set_index(date_fields[0], inplace=True)
+        if len(date_fields) > 0:
+            y_df = pd.DataFrame(df[num_fields[0]]*y_pred)
+            y_df = y_df[y_df[num_fields[0]]>0]
+            fig.add_trace(go.Scatter(x=df.index, y=df[num_fields[0]], name=num_fields[0], hovertemplate='%{y}<extra></extra>'))
+            fig.add_trace(go.Scatter(x=y_df.index, y=y_df[num_fields[0]], name='outlier', line=dict(color="#ff0000"),
+                                     mode='markers', hovertemplate='%{y}<extra></extra>'))
+            fig.update_layout(hovermode='x')
+        return fig
+    else:
+        dim = min(dim, len(num_fields))
 
     # visualization solution of 2d/3d
     if cfg.get('umap'):
@@ -1984,23 +1995,23 @@ def plt_ts_predict(tsn, cfg, df, fields):
     if cfg.get('season'):
         season = cfg['season']
 
-    future_step = 7
+    future_step = 14
     ts_df = df.resample(period).agg(agg)
     match algo:
         case 'ses':
             # Simple Exponential Smoothing(没有趋势和季节性)
             md = SimpleExpSmoothing(ts_df).fit(optimized=True, use_brute=True)
-            pred = md.predict(start=len(ts_df) - 7, end=len(ts_df) + future_step)
+            pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
         case 'holt':
             # Holt's linear trend method(有趋势但没有季节性)
             md = Holt(ts_df, initialization_method='estimated', damped_trend=damped).fit(optimized=True)
-            pred = md.predict(start=len(ts_df) - 7, end=len(ts_df) + future_step)
+            pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
         case 'ets':
             # Holt-Winter's additive/multiplicative/damped method(有趋势也有季节性)
             # Cannot compute initial seasonals using heuristic method with less than two full seasonal cycles in the data.
             md = ExponentialSmoothing(ts_df, trend=trend, seasonal=season, damped_trend=damped).fit(optimized=True, use_brute=True)
-            pred = md.predict(start=len(ts_df) - 7, end=len(ts_df) + future_step)
+            pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
             # fig.add_trace(go.Scatter(x=md.season.index, y=md.season.values, name='Season', mode='lines'))
         case 'arima':
@@ -2025,14 +2036,16 @@ def plt_ts_predict(tsn, cfg, df, fields):
             # from sktime.datasets import load_airline
             # yyyyy = load_airline()
             temp_df = ts_df.head(len(ts_df) - 7)
+            tmp = ts_df.head(len(ts_df)//2)
             # the following issue when import pmdarima
             # reason: numpy version is high
             # numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
             md = AutoARIMA(sp=12, seasonal=True, n_jobs=3, n_fits=3, maxiter=10, trace=True).fit(temp_df)
-            prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
+            prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period)
             pred = md.predict(prange)
         case 'autoets':
             temp_df = ts_df.head(len(ts_df) - 7)
+            tmp = ts_df.head(len(ts_df) // 2)
             # temp_df.index = temp_df.index.strftime('%Y-%m')
             # autoETS asks Series, not Dataframe.
             # 'M' is available for period, but is deprecated by Datetime
@@ -2054,12 +2067,13 @@ def plt_ts_predict(tsn, cfg, df, fields):
 
             # autoETS asks Series, not Dataframe
             # prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
-            prange = pd.period_range(temp_df.index.max(), periods=future_step + 7, freq=period_unit)
+            prange = pd.period_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period_unit)
             pred = md.predict(prange)
         case 'prophet':
             # growth: 'linear', 'logistic' or 'flat'
             # seasonality_mode: 'additive' (default) or 'multiplicative'.
             temp_df = ts_df.head(len(ts_df) - 7)
+            tmp = ts_df.head(len(ts_df) // 2)
             idx_name = temp_df.index.name
             temp_df.reset_index(inplace=True)
             temp_df = temp_df.rename(columns={idx_name: "ds", vf: "y"})
@@ -2067,7 +2081,7 @@ def plt_ts_predict(tsn, cfg, df, fields):
             # US, CN,
             # md.add_country_holidays(country_name='US')
             md.fit(temp_df)
-            prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
+            prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period)
             future = md.make_future_dataframe(periods=future_step+7, freq=period)
             pred = md.predict(future).tail(future_step+7)
             pred.set_index('ds', inplace=True)
@@ -2076,12 +2090,13 @@ def plt_ts_predict(tsn, cfg, df, fields):
         case 'natureprophet':
             # neuralprophet 0.9.0 requires numpy<2.0.0,>=1.25.0, but you have numpy 2.0.2 which is incompatible.
             temp_df = ts_df.head(len(ts_df) - 7)
+            tmp = ts_df.head(len(ts_df) // 2)
             idx_name = temp_df.index.name
             temp_df.reset_index(inplace=True)
             temp_df = temp_df.rename(columns={idx_name: "ds", vf: "y"})
             md = NeuralProphet()
             md.fit(temp_df, freq=period)
-            future = md.make_future_dataframe(df=temp_df, periods=future_step + 7)
+            future = md.make_future_dataframe(df=tmp, periods=(len(ts_df)//2)+future_step)
             pred = md.predict(future)
             pred.set_index('ds', inplace=True)
             # trend, yhat
