@@ -13,36 +13,12 @@ from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME, MLFLOW_USER
 '''
 
 mlflow_setup = '''
-    mlflow.set_tracking_uri(config.get('tracking_url'))
-    mlflow.set_experiment(experiment_id=config.get('exper_id'))
-    mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
+    mlflow.set_tracking_uri(config.pop('tracking_url'))
+    mlflow.set_experiment(experiment_id=config.pop('exper_id'))
+    mlflow.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.pop('user_id')})
     matplotlib.use('agg')
     train_y = val_x = val_y = None
 '''
-
-sklearn_tpl = string.Template('''
-import ray
-import mlflow
-import matplotlib
-from mlflow.utils.mlflow_tags import MLFLOW_RUN_NAME, MLFLOW_USER
-from sklearn.{MODULE} import {ALGORITHM}
-from sklearn import metrics
-
-# for sklearn algo
-class CustomTrain:
-    def train(config: dict, data: dict):
-        mlflow.set_tracking_uri(config.get('tracking_url'))
-        mlflow.set_experiment(experiment_id=config.get('exper_id'))
-        mlflow.sklearn.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
-        matplotlib.use('agg')
-
-        estimator = {ALGORITHM}({PARAMS})
-        for epoch in range(config.get("epochs", 1)):
-            estimator.fit(data['x'], data['y'])
-            {SCORE_NAME}_fn = metrics.get_scorer('{SCORE_NAME}')
-            {SCORE_NAME} = {SCORE_NAME}_fn(estimator, data['x'], data['y'])
-            ray.train.report({"{SCORE_NAME}": {SCORE_NAME}})
-''')
 
 pytorch_data_tpl = string.Template('''
 import os
@@ -94,9 +70,9 @@ class RayTrainable:
     torch.set_float32_matmul_precision('medium')
 
     # mlflow setup
-    mlflow.set_tracking_uri(config.get('tracking_url'))
-    mlflow.set_experiment(experiment_id=config.get('exper_id'))
-    mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
+    mlflow.set_tracking_uri(config.pop('tracking_url'))
+    mlflow.set_experiment(experiment_id=config.pop('exper_id'))
+    mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.pop('user_id')})
 
     trainer = pl.Trainer(
       max_epochs=config.get("epochs", 1),
@@ -189,11 +165,11 @@ class RayTrainable:
 
     # mlflow setup
     mlflow.set_tracking_uri(config.pop('tracking_url'))
-    mlflow.set_experiment(experiment_id=config.get('exper_id'))
+    mlflow.set_experiment(experiment_id=config.pop('exper_id'))
     # save config parameters but autolog will not take effect. run without end time. how to fix?
     # mlflow.log_params(config)
     mlflow.pytorch.autolog(
-        extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
+        extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.pop('user_id')})
 
 
     trainer = pl.Trainer(
@@ -260,9 +236,9 @@ class RayTrainable:
     torch.set_float32_matmul_precision('medium')
 
     # mlflow setup
-    mlflow.set_tracking_uri(config.get('tracking_url'))
-    mlflow.set_experiment(experiment_id=config.get('exper_id'))
-    mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.get('user_id')})
+    mlflow.set_tracking_uri(config.pop('tracking_url'))
+    mlflow.set_experiment(experiment_id=config.pop('exper_id'))
+    mlflow.pytorch.autolog(extra_tags={MLFLOW_RUN_NAME: ray.train.get_context().get_trial_name(), MLFLOW_USER: config.pop('user_id')})
 
     trainer = pl.Trainer(
       max_epochs=config.get("epochs", 1),

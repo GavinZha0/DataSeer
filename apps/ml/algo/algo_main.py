@@ -162,9 +162,14 @@ async def extract_algos(category: str):
                 elif k == 'XGBRanker':
                     result[k] = ['rank:pairwise', 'rank:ndcg', 'rank:map']
         elif cat.endswith('LIGHTGBM'):
-            result['root'] = []
             lgb_models = lightgbm.__all__
-            [result['root'].append(k) for k in lgb_models if k.startswith('LGBM')]
+            for k in lgb_models:
+                if k == 'LGBMClassifier':
+                    result[k] = ['binary', 'multiclass', 'multiclassova', 'num_class']
+                elif k == 'LGBMRegressor':
+                    result[k] = ['regression_l1', 'regression_l2', 'huber', 'fair', 'poisson', 'quantile', 'mape', 'gamma', 'tweedie']
+                elif k == 'LGBMRanker':
+                    result[k] = ['lambdarank', 'rank_xendcg', 'rank_xendcg']
         elif cat.endswith('CATBOOST'):
             # catboost 1.2.7 requires numpy<2.0,>=1.16.0, but you have numpy 2.0.2 which is incompatible.
             result['root'] = []
@@ -285,7 +290,7 @@ async def extract_algo_args(category: str, algo: str):
                     # ex: 'Attributes\n'
                     algo_doc = algo_doc[:para_idx - 1]
         elif cat.endswith('LIGHTGBM'):
-            algo_func = getattr(lightgbm, algorithm)
+            algo_func = getattr(lightgbm, group)
             if algo_func:
                 # cut doc to get parameter description
                 algo_doc = algo_func._base_doc
@@ -307,6 +312,9 @@ async def extract_algo_args(category: str, algo: str):
     if algo_func:
         if cat.endswith('XGBOOST'):
             params = algo_func().get_xgb_params()
+            args = [dict(name=key, default=params[key]) for key in params if key not in ignored]
+        elif cat.endswith('LIGHTGBM'):
+            params = algo_func().get_params()
             args = [dict(name=key, default=params[key]) for key in params if key not in ignored]
         else:
             # get arg names and default values of the algo
@@ -362,6 +370,23 @@ async def extract_algo_metrics(category: str, algo: str):
         metrics['classifier'] = [it for it in names if it not in metrics['cluster'] and it not in metrics['regressor']]
         return metrics[sub_cat]
     elif cat.startswith('BOOST'):
+        if cat.endswith('LIGHTGBM'):
+            if 'Classifier' in group:
+                # LogLoss: Logistic Loss, Negative Log-Likelihood or Cross-Entropy Loss(负对数损失), mlogloss: Multiclass Log Loss
+                # auc: Area under the Curve, aucpr: Area Under the Precision-Recall Curve, map: Mean Average Precision(平均精确度)
+                if 'binary' in algorithm:
+                    return ['binary', 'binary_error', 'auc']
+                else: # 'multi'
+                    return ['multi_logloss', 'multi_error', 'auc']
+            elif 'Regressor' in group:
+                # MAE: Mean Absolute Error(平均绝对值误差), MPE: Mean Percentage Error(平均百分比误差), MSPE:Mean Squared Prediction Error(均方百分比误差),
+                # MAPE: Mean Absolute Pencentage Error(平均绝对百分比误差), MPHE: Mean Pseudo Huber Error
+                # MSE: Mean Squared Error(均方误差), RMSE: Root Mean Squared Error(均方根误差), RMSLE: Root Mean Squared Logarithmic Error(均方根对数误差)
+                # NDCG: Normalized Discounted Cumulative Gain, MAP: Mean Average Precision
+                return ['l1', 'l2', 'rmse', 'quantile', 'mape', 'huber', 'fair', 'poisson', 'gamma', 'gamma_deviance', 'tweedie']
+            elif 'Ranker' in group:
+                # pre: Precision at k, ndcg: Normalized Discounted Cumulative Gain(归一化折损累计增益)
+                return ['auc', 'pre', 'ndcg' 'map']
         if cat.endswith('XGBOOST'):
             # sklearn.metrics can be used by xgboost when use sklearn API
             # all xgboost metrics should be covert to lower case when they are applied
@@ -416,8 +441,10 @@ async def train_pipeline(algo_id: int, db: AsyncSession, user: dict):
     # build parameters
     params = await build_params(algo_info, user)
     if num_uniques:
-        # num_class for classifier of XGBoost
-        params['tune_param']['num_class'] = num_uniques[0]
+        # num_class for classifier of XGBoost/LightGBM
+        # don't add it for regression
+        if 'binary' in algo_info.algoName or 'multi' in algo_info.algoName:
+            params['tune_param']['num_class'] = num_uniques[0]
 
     if targets:
         # target names
@@ -499,6 +526,9 @@ async def build_params(algo: ml_schema.Algo, user: dict):
         tuner['epochs'] = params['epochs']
         # for xgboost
         tuner['device'] = 'cuda' if params['gpu'] else 'cpu'
+        tuner['eval_metric'] = params['metrics']
+        # for lightgbm
+        tuner['metric'] = params['metrics']
 
         # search space based on parameters
         if algo.trainCfg.get('params'):

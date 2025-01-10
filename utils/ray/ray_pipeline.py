@@ -34,6 +34,8 @@ from config.settings import TEMP_DIR, RAY_NUM_GPU
 from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 from ray.air import ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
+from ray.train.xgboost import XGBoostTrainer
+from ray.train.lightgbm import LightGBMTrainer
 import s3fs
 import duckdb
 
@@ -536,7 +538,7 @@ class RayPipeline:
         elif self.algo_cat.endswith('XGBOOST'):
             return self.trainXGBoost(params, train_func, dataset)
         elif self.algo_cat.endswith('LIGHTGBM'):
-            return self.trainXGBoost(params, train_func, dataset)
+            return self.trainLightGBM(params, train_func, dataset)
 
 
     # train sklearn algo for tabular data
@@ -580,7 +582,8 @@ class RayPipeline:
                                    time_budget_s=params['timeout'] * 60 * params['trials'] if params.get('timeout') else None)
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
-        run_cfg = train.RunConfig(name=params['exper_name'],  stop=params.get('stop'),
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                  stop=params.get('stop'),
                                   verbose=get_air_verbosity(AirVerbosity.DEFAULT),
                                   log_to_file=False, storage_path=TEMP_DIR+'/tune/',
                                   checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
@@ -656,10 +659,11 @@ class RayPipeline:
         # earlystop will cause run.status is still running and end_time will be null
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
                                    search_alg=search.BasicVariantGenerator(max_concurrent=3))
-        run_cfg = train.RunConfig(name=params['exper_name'],  # stop=params.get('stop'),
-                                    checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
-                                    log_to_file=False, storage_path=TEMP_DIR + '/tune/',
-                                    callbacks=[progressRpt])
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                # stop=params.get('stop'),
+                                checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
+                                log_to_file=False, storage_path=TEMP_DIR + '/tune/',
+                                callbacks=[progressRpt])
 
         tuner = tune.Tuner(trainable=trainer,
                             tune_config=tune_cfg,
@@ -882,23 +886,23 @@ class RayPipeline:
             # stop when the metric mets the threshold
             if params['metrics'] in ['accuracy', 'f1']:
                 # The bigger the better. mode is fixed 'max' in RunConfig.stop
-                early_stopper = {f"validation_0-{params['metrics']}" : params['threshold'], "training_iteration": params['epochs']}
+                early_stopper = {f"eval-{params['metrics']}" : params['threshold'], "training_iteration": params['epochs']}
                 if params['timeout']:
                     early_stopper['time_total_s'] = params['timeout'] * 60
             else:
                 # The smaller the better. define a custom TrialPlateauStopper with mode 'min'
-                early_stopper = TrialPlateauStopper(metric=f"validation_0-{params['metrics']}", mode="min",
+                early_stopper = TrialPlateauStopper(metric=f"eval-{params['metrics']}", mode="min",
                                                     metric_threshold=params['threshold'])
                 # metric: is mandatory. like 'validation_0-rmse' for xgboost
                 # the main purpose is to stop the trial when max_t reaches the max epochs
                 scheduler_cfg = schedule.ASHAScheduler(max_t=params['epochs'], grace_period=3,
-                                                       metric=f"validation_0-{params['metrics']}", mode='min')
+                                                       metric=f"eval-{params['metrics']}", mode='min')
         else:
             early_stopper = {"training_iteration": params['epochs']}
             if params['timeout']:
                 early_stopper['time_total_s'] = params['timeout'] * 60
 
-
+        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params['gpu'])
         # time_budget_s: stop training when time budget (in seconds) has elapsed for a trail
         # max_t: stop training when epoch reaches max_t
         tune_cfg = tune.TuneConfig(num_samples=params['trials'],
@@ -908,13 +912,23 @@ class RayPipeline:
         # ray will save tune results into storage_path with sub-folder exper_name
         # this is not used because we are using mlflow to save result on S3
         run_cfg = train.RunConfig(name=params['exper_name'],
-                                  stop=early_stopper,
+                                  # stop=early_stopper,
                                   verbose=get_air_verbosity(AirVerbosity.DEFAULT),
                                   log_to_file=False, storage_path=TEMP_DIR + '/tune/',
                                   failure_config=train.FailureConfig(fail_fast=True),
                                   checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
                                   callbacks=[progressRpt])
 
+        '''
+        trainer = XGBoostTrainer(
+            scaling_config=scaling_cfg,
+            label_column=params['tune_param']['targets'][0],
+            params=params['tune_param'],
+            datasets=dataset
+        )
+        '''
+
+        # params['tune_param']['validate_parameters'] = False
         tuner = tune.Tuner(trainable=tune_func,
                            tune_config=tune_cfg,
                            run_config=run_cfg,
@@ -929,6 +943,107 @@ class RayPipeline:
             # report progress
             progressRpt.jobProgress(JOB_PROGRESS_END)
 
+    # train ML algo based on ray and mlflow
+    def trainLightGBM(self, params: dict, train_func, dataset: any):
+        # use AWS S3/minio as artifact repository
+        os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
+        os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')
+        os.environ["MLFLOW_S3_IGNORE_TLS"] = 'true'
+        # os.environ["AWS_DEFAULT_REGION"] = None
+        mlflow.environment_variables.MLFLOW_S3_IGNORE_TLS = 'true'
+        mlflow.environment_variables.MLFLOW_S3_ENDPOINT_URL = params.get('s3_url')
+        # use mysql db as tracking store
+        mlflow.set_tracking_uri(params['tracking_url'])
+        # resolve warning 'Experiment state snapshotting has been triggered multiple times in the last 5.0 seconds'
+        os.environ['TUNE_WARN_EXCESSIVE_EXPERIMENT_CHECKPOINT_SYNC_THRESHOLD_S'] = '0'
+        # to disable log deduplication
+        os.environ["RAY_DEDUP_LOGS"] = "0"
+        # enable custom ProgressReporter when set to 0
+        os.environ['RAY_AIR_NEW_OUTPUT'] = '0'
+        # os.environ["WORLD_SIZE"] = '1'
+        # os.environ["RANK"] = '0'
+
+        params['tune_param']['dist'] = True
+
+        # create a new experiment with UNIQUE name for mlflow (ex: algo_3_1234567890)
+        exper_tags = dict(org_id=params['org_id'], algo_id=params['algo_id'], algo_name=params['algo_name'],
+                          user_id=params['user_id'], args='|'.join(params['args']))
+        params['exper_id'] = mlflow.create_experiment(name=params['exper_name'], tags=exper_tags,
+                                                      artifact_location=params['artifact_location'])
+        params['tune_param']['exper_id'] = params['exper_id']
+
+        # create progress report
+        progressRpt = RayReport(params)
+        progressRpt.jobProgress(JOB_PROGRESS_START)
+
+        if params['gpu'] and RAY_NUM_GPU > 0:
+            # tune function with resources
+            tune_func = tune.with_resources(tune.with_parameters(train_func, data=dataset),
+                                            resources={"gpu": RAY_NUM_GPU})
+        else:
+            tune_func = tune.with_parameters(train_func, data=dataset)
+
+        scheduler_cfg = None
+        if params['metrics'] and params['threshold']:
+            # stop when the metric mets the threshold
+            if params['metrics'] in ['accuracy', 'f1']:
+                # The bigger the better. mode is fixed 'max' in RunConfig.stop
+                early_stopper = {f"eval-{params['metrics']}": params['threshold'],
+                                 "training_iteration": params['epochs']}
+                if params['timeout']:
+                    early_stopper['time_total_s'] = params['timeout'] * 60
+            else:
+                # The smaller the better. define a custom TrialPlateauStopper with mode 'min'
+                early_stopper = TrialPlateauStopper(metric=f"eval-{params['metrics']}", mode="min",
+                                                    metric_threshold=params['threshold'])
+                # metric: is mandatory. like 'validation_0-rmse' for xgboost
+                # the main purpose is to stop the trial when max_t reaches the max epochs
+                scheduler_cfg = schedule.ASHAScheduler(max_t=params['epochs'], grace_period=3,
+                                                       metric=f"eval-{params['metrics']}", mode='min')
+        else:
+            early_stopper = {"training_iteration": params['epochs']}
+            if params['timeout']:
+                early_stopper['time_total_s'] = params['timeout'] * 60
+
+        scaling_cfg = ScalingConfig(num_workers=1, use_gpu=params['gpu'])
+        # time_budget_s: stop training when time budget (in seconds) has elapsed for a trail
+        # max_t: stop training when epoch reaches max_t
+        tune_cfg = tune.TuneConfig(num_samples=params['trials'],
+                                   search_alg=search.BasicVariantGenerator(max_concurrent=3),
+                                   scheduler=scheduler_cfg,
+                                   time_budget_s=params['timeout'] * 60 if params['timeout'] else None)
+        # ray will save tune results into storage_path with sub-folder exper_name
+        # this is not used because we are using mlflow to save result on S3
+        run_cfg = train.RunConfig(name=params['exper_name'],
+                                  # stop=early_stopper,
+                                  verbose=get_air_verbosity(AirVerbosity.DEFAULT),
+                                  log_to_file=False, storage_path=TEMP_DIR + '/tune/',
+                                  failure_config=train.FailureConfig(fail_fast=True),
+                                  checkpoint_config=train.CheckpointConfig(checkpoint_frequency=0),
+                                  callbacks=[progressRpt])
+        '''
+        trainer = LightGBMTrainer(
+            label_column=params['tune_param']['targets'][0],
+            params=params['tune_param'],
+            scaling_config=ScalingConfig(num_workers=3),
+            datasets=dataset
+        )
+        '''
+
+        # params['tune_param']['validate_parameters'] = False
+        tuner = tune.Tuner(trainable=tune_func,
+                           tune_config=tune_cfg,
+                           run_config=run_cfg,
+                           param_space=params['tune_param'])
+        try:
+            # start train......
+            result = tuner.fit()
+        except RayError as e:
+            print(e)
+            progressRpt.jobProgress(JOB_PROGRESS_END, e)
+        else:
+            # report progress
+            progressRpt.jobProgress(JOB_PROGRESS_END)
 
     # train ML algo based on ray and mlflow
     def run(self, train_func: any, params: dict):
