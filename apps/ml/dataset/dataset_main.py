@@ -42,31 +42,35 @@ async def get_data_stat(type: str, df: any, limit: int = None):
         case 'data' | 'timeseries':
             # detect datetime fields
             type_list = []
+            from datetime import date, datetime, timedelta, time
             for col in df.columns:
-                if df[col].dtypes in ['object']:
+                if df[col].dtypes.name in ['object']:
                     obj_cell = df[col].dropna().iloc[0]
                     if pd.api.types.is_datetime64_dtype(df[col]) or pd.api.types.is_datetime64_any_dtype(df[col]) or pd.api.types.is_datetime64_ns_dtype(df[col]):
                         type_list.append('datetime')
                         df[col] = pd.to_datetime(df[col], errors='coerce')
-                    elif isinstance(obj_cell, str):
+                    elif isinstance(obj_cell, date):
+                        type_list.append('date')
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                    elif isinstance(obj_cell, time):
+                        type_list.append('time')
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                    elif isinstance(obj_cell, datetime) or isinstance(obj_cell, timedelta):
+                        type_list.append('datetime')
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                    elif len(obj_cell) > 4 and isinstance(obj_cell, str):
+                        digits = [1 if c.isdigit() else 0 for c in obj_cell]
+                        digit_count = sum(digits)
+                        if digit_count >= 4:
                             # try to parse datetime string
                             date_time = dateparser.parse(obj_cell)
                             if date_time is not None:
                                 type_list.append('datetime')
                                 df[col] = pd.to_datetime(df[col], errors='coerce')
-                    else:
-                        from datetime import date, datetime, timedelta, time
-                        if isinstance(obj_cell, date):
-                            type_list.append('date')
-                            df[col] = pd.to_datetime(df[col], errors='coerce')
-                        elif isinstance(obj_cell, time):
-                            type_list.append('time')
-                            df[col] = pd.to_datetime(df[col], errors='coerce')
-                        elif isinstance(obj_cell, datetime) or isinstance(obj_cell, timedelta):
-                            type_list.append('datetime')
-                            df[col] = pd.to_datetime(df[col], errors='coerce')
                         else:
                             type_list.append(df[col].dtypes.name)
+                    else:
+                        type_list.append(df[col].dtypes.name)
                 else:
                     type_list.append('datetime' if df[col].dtypes.name.startswith('datetime') else df[col].dtypes.name)
 
@@ -82,6 +86,20 @@ async def get_data_stat(type: str, df: any, limit: int = None):
                     desc[col] = desc[col].replace(np.nan, '')
                     desc[col] = desc[col].astype('str')
 
+                    # remove ms (.SSS)
+                    if '.' in desc[col]['min']:
+                        desc.loc['min', col] = desc[col]['min'][:desc[col]['min'].index('.')]
+                    if '.' in desc[col]['25%']:
+                        desc.loc['25%', col] = desc[col]['25%'][:desc[col]['25%'].index('.')]
+                    if '.' in desc[col]['mean']:
+                        desc.loc['mean', col] = desc[col]['mean'][:desc[col]['mean'].index('.')]
+                    if '.' in desc[col]['50%']:
+                        desc.loc['50%', col] = desc[col]['50%'][:desc[col]['50%'].index('.')]
+                    if '.' in desc[col]['75%']:
+                        desc.loc['75%', col] = desc[col]['75%'][:desc[col]['75%'].index('.')]
+                    if '.' in desc[col]['max']:
+                        desc.loc['max', col] = desc[col]['max'][:desc[col]['max'].index('.')]
+
             # round values
             stat = desc.round(3).T
             stat['type'] = type_list
@@ -91,17 +109,20 @@ async def get_data_stat(type: str, df: any, limit: int = None):
             stat['nunique'] = {}
             for col in df.columns:
                 stat.loc[col, 'nunique'] = df[col].nunique()
-                if stat.loc[col, 'nunique'] < 20:
-                    if df[col].dtypes in ['int64']:
-                        stat.at[col, 'unique'] = np.sort(df[col].unique())
-                    elif df[col].dtypes in ['object']:
+                if stat.loc[col, 'nunique'] <= 20:
+                    # list the unique values
+                    if df[col].dtypes.name in ['int64', 'float64']:
+                        stat.at[col, 'unique'] = np.sort(df[col].dropna().unique()).tolist()
+                    elif df[col].dtypes.name in ['object']:
                         stat.at[col, 'unique'] = np.sort(df[col].dropna().unique().astype('str').tolist()).tolist()
-
+                else:
+                    stat.at[col, 'unique'] = []
             stat_var = df.var(numeric_only=True).to_frame('variance')
             stat = pd.merge(stat, stat_var, left_index=True, right_index=True, how='outer')
             stat = stat.reset_index().rename(columns={"index": "name", "25%": "pct25", "50%": "median", "75%": "pct75"})
             stat = stat.round(3)
             # convert to dict
+            # stat.fillna(0, inplace=True)
             stat = stat.to_dict(orient='records')
             # preview data
             data = df.head(max_limit)
