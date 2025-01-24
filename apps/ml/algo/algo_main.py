@@ -27,6 +27,84 @@ from utils.ray.ray_pipeline import RayPipeline
 import inspect
 import ast
 
+som_doc = '''
+If your dataset has 150 samples, 5*sqrt(150) = 61.23
+hence a map 8-by-8 should perform well.
+
+    Parameters
+    ----------
+    x : int
+        x dimension of the SOM.
+
+    y : int
+        y dimension of the SOM.
+
+    input_len : int
+        Number of the elements of the vectors in input.
+
+    sigma : float, optional (default=1)
+        Spread of the neighborhood function.
+
+        Needs to be adequate to the dimensions of the map
+        and the neighborhood function. In some cases it
+        helps to set sigma as sqrt(x^2 +y^2).
+
+    learning_rate : float, optional (default=0.5)
+        Initial learning rate.
+
+        Adequate values are dependent on the data used for training.
+
+        By default, at the iteration t, we have:
+            learning_rate(t) = learning_rate / (1 + t * (100 / max_iter))
+
+    decay_function : string or callable, optional
+    (default='inverse_decay_to_zero')
+        Function that reduces learning_rate at each iteration.
+        Possible values: 'inverse_decay_to_zero', 'linear_decay_to_zero',
+                         'asymptotic_decay' or callable
+
+        If a custom decay function using a callable
+        it will need to to take in input
+        three parameters in the following order:
+
+        1. learning rate
+        2. current iteration
+        3. maximum number of iterations allowed
+
+        Note that if a lambda function is used to define the decay
+        MiniSom will not be pickable anymore.
+
+    neighborhood_function : string, optional (default='gaussian')
+        Function that weights the neighborhood of a position in the map.
+        Possible values: 'gaussian', 'mexican_hat', 'bubble', 'triangle'
+
+    topology : string, optional (default='rectangular')
+        Topology of the map.
+        Possible values: 'rectangular', 'hexagonal'
+
+    activation_distance : string, callable optional (default='euclidean')
+        Distance used to activate the map.
+        Possible values: 'euclidean', 'cosine', 'manhattan', 'chebyshev'
+
+        Example of callable that can be passed:
+
+        def euclidean(x, w):
+            return linalg.norm(subtract(x, w), axis=-1)
+
+    random_seed : int, optional (default=None)
+        Random seed to use.
+
+    sigma_decay_function : string, optional
+    (default='inverse_decay_to_one')
+        Function that reduces sigma at each iteration.
+        Possible values: 'inverse_decay_to_one', 'linear_decay_to_one',
+                         'asymptotic_decay'
+
+        The default function is:
+            sigma(t) = sigma / (1 + (t * (sigma - 1) / max_iter))
+'''
+
+
 """
 extract framework versions
 """
@@ -149,8 +227,8 @@ async def extract_algos(category: str):
             result['misc'] = []
             [result['misc'].append(k) for k in add_list]
     elif cat.startswith('ANN'):
-        result['SOM'] = []
-        result['SOM'].append('MiniSOM')
+        result['root'] = []
+        result['root'].append('MiniSOM')
     elif cat.startswith('BOOST'):
         if cat.endswith('XGBOOST'):
             xgb_models = xgb.__all__
@@ -306,6 +384,16 @@ async def extract_algo_args(category: str, algo: str):
         elif cat.endswith('CATBOOST'):
             # to do
             return []
+    elif cat.startswith('ANN'):
+        if 'SOM' in algorithm:
+            arguments = {}
+            arguments['SOM'] = [dict(name='x', default=8), dict(name='y', default=8),
+                                dict(name='input_len', default=1), dict(name='sigma', default=1),
+                                dict(name='learning_rate', default=0.5), dict(name='decay_function', default='asymptotic_decay'),
+                                dict(name='neighborhood_function', default='gaussian'), dict(name='topology', default='rectangular'),
+                                dict(name='activation_distance', default='euclidean'), dict(name='random_seed', default=42),
+                                dict(name='sigma_decay_function', default='asymptotic_decay')]
+            return dict(algo=algo, args=arguments['SOM'], doc=som_doc)
     else:
         return []
 

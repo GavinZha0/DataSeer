@@ -7,6 +7,7 @@ from gluonts.dataset.common import ListDataset
 from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.split import split
 from gluonts.torch import DeepAREstimator
+from minisom import MiniSom
 # import umap
 from pyod.models.knn import KNN
 from sklearn import manifold
@@ -638,9 +639,13 @@ Outlier detection
 PyOD(Python Outlier Detection):用于检测数据中异常值的库，它能对20多种不同的算法进行访问
 """
 def plt_stat_outlier(cfg, df, fields):
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    valid_fields = [field['name'] for field in fields if 'omit' not in field]
+    target_field = [field['name'] for field in fields if 'target' in field]
+    feature_fields = list(set(valid_fields).difference(set(target_field)))
+    num_fields = [field['name'] for field in fields if field['attr'] == 'conti' and 'target' not in field] + \
+                 [field['name'] for field in fields if field['attr'] == 'disc' and 'target' not in field]
     fig = go.Figure()
+
     method = 'quantile'
     if cfg.get('method'):
         method = cfg['method']
@@ -776,7 +781,7 @@ def plt_stat_outlier(cfg, df, fields):
             # 'russellrao', 'seuclidean', 'sokalmichener', 'sokalsneath',
             # 'sqeuclidean', 'yule']
             clf = LOF(contamination=0.05, n_neighbors=10, metric=metric)
-            y_pred = clf.fit_predict(df[num_fields])
+            y_pred = clf.fit_predict(df[num_fields].drop(columns=target_field))
         case 'dbscan':
             # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法
             #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
@@ -805,6 +810,17 @@ def plt_stat_outlier(cfg, df, fields):
             clf = OCSVM(nu=0.05, contamination=0.05, kernel=kernel)
             clf.fit(df[num_fields])
             y_pred = clf.labels_
+        case 'som':
+            # self-organizing map(自组织映射算法)
+            # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
+            # 无监督，非线性
+            som = MiniSom(10, 10, len(num_fields), sigma=0.3, learning_rate=0.5, neighborhood_function='triangle')
+            som.train_batch(df[feature_fields].values, 100)
+            quantization_errors = np.linalg.norm(som.quantization(df[num_fields].values) - df[num_fields].values, axis=1)
+            error_treshold = np.percentile(quantization_errors, 95)
+            # outlier is True
+            is_outlier = quantization_errors > error_treshold
+            y_pred = is_outlier.astype(int)
         case '_':
             return fig
 
