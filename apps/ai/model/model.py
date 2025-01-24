@@ -20,6 +20,8 @@ class AiModel(BaseDbModel):
     tags: Mapped[Optional[str]] = mapped_column(String(128), comment="Tags")
     version: Mapped[int] = mapped_column(Integer, comment="Version")
     algo_id: Mapped[Optional[int]] = mapped_column(Integer, comment="Algo Id")
+    transform: Mapped[Optional[str]] = mapped_column(Text, comment="Transform")
+    schema: Mapped[Optional[str]] = mapped_column(Text, comment="Schema")
     rate: Mapped[Optional[int]] = mapped_column(Integer, comment="Rate")
     price: Mapped[Optional[str]] = mapped_column(String(16), comment="Price")
     run_id: Mapped[Optional[str]] = mapped_column(String(32), comment="Run Id")

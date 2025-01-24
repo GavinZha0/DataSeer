@@ -13,11 +13,15 @@ from fastapi import Depends, APIRouter
 
 from .mstore.data import data_execute
 from .schema.data import AiDataExecute
-from .schema.model import AiModelDeploy
-from .mstore.model import model_deploy, model_terminate
+from .schema.model import AiModelDeploy, AiModelSchema
+from .mstore.model import model_deploy, model_terminate, get_model_schema
 
 app = APIRouter()
 
+AI_MODEL_STATUS_IDLE = 0
+AI_MODEL_STATUS_SERVING = 1
+AI_MODEL_STATUS_EXCEPTION = 2
+AI_MODEL_STATUS_UNKNOWN = 3
 
 ###########################################################
 #    AiModel
@@ -28,10 +32,10 @@ async def list_model(req: param.ModelParams = Depends(), auth: Auth = Depends(Al
                                                           v_where=[model.AiModel.org_id == auth.user.oid])
     return SuccessResponse(datas, count=count)
 
-AI_MODEL_STATUS_IDLE = 0
-AI_MODEL_STATUS_SERVING = 1
-AI_MODEL_STATUS_EXCEPTION = 2
-AI_MODEL_STATUS_UNKNOWN = 3
+@app.post("/model/schema", summary="Get model schema")
+async def get_schema(req: AiModelSchema, auth: Auth = Depends(AllUserAuth())):
+    schema_sign = await get_model_schema(req.runId)
+    return SuccessResponse(schema_sign)
 
 @app.post("/model/deploy", summary="Deploy Ai Model")
 async def deploy_model(req: AiModelDeploy, auth: Auth = Depends(AllUserAuth())):
@@ -76,7 +80,14 @@ async def list_data(req: param.ImageParams = Depends(), auth: Auth = Depends(All
 
 @app.post("/data/execute", summary="Execute AiData")
 async def execute_data(req: AiDataExecute, auth: Auth = Depends(AllUserAuth())):
-    result = await data_execute(req.endpoint, req.data)
+    if req.transform:
+        # get model info
+        m_info = await crud.ModelDal(auth.db).get_data(req.mId, v_ret=RET.DUMP, v_where=[model.AiModel.org_id == auth.user.oid])
+        # transform data before run model
+        result = await data_execute(req.endpoint, req.data, m_info.get('transform'))
+    else:
+        # run model without data transform
+        result = await data_execute(req.endpoint, req.data)
     return SuccessResponse(result)
 
 

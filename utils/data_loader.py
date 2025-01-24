@@ -28,6 +28,10 @@ from sqlalchemy import text
 # Both this and ray_pipeline should keep the same logic and bug fix
 class DataLoader:
     def __init__(self, source_info: any, dataset_info: any = None):
+        if source_info is None:
+            return
+
+        self.train = True
         self.source_info = source_info
         self.source_type = source_info.type.upper()
         self.dataset_info = dataset_info
@@ -205,10 +209,15 @@ class DataLoader:
     """
     transform data
     """
-    async def transform(self, df: pd.DataFrame, fields: any):
+    async def transform(self, df: pd.DataFrame, fields: any, data_type: str = None):
+        if type is not None:
+            self.data_type = data_type
+            # not train data
+            self.train = False
+
         match self.data_type:
             case 'DATA' | 'TIMESERIES':
-                return self.transTabular(df, fields)
+                return self.transTabular(df, fields, self.train)
             case 'IMAGE':
                 return self.transTorch(df, fields)
             case 'AUDIO':
@@ -217,7 +226,7 @@ class DataLoader:
                 return self.transTorch(df, fields)
 
     # transform tabular data based on field config
-    def transTabular(self, df: pd.DataFrame, fields):
+    def transTabular(self, df: pd.DataFrame, fields: any, train: bool = True):
         if df is None or len(df) == 0:
             return None
 
@@ -228,19 +237,27 @@ class DataLoader:
         featureFields = list(set(validFields).difference(set(targetFields)))
 
         # remove omit fields
-        df.drop(columns=omitFields, inplace=True)
+        for f in omitFields:
+            if f in df.columns:
+                df.drop(columns=[f], inplace=True)
 
-        # drop the row/column if all values are na
-        df.dropna(how='all', inplace=True)
-        df.dropna(axis=1, how='all', inplace=True)
+        # don't drop anything if it's NOT training data
+        if train:
+            # drop the row/column if all values are na
+            df.dropna(how='all', inplace=True)
+            df.dropna(axis=1, how='all', inplace=True)
 
-        # drop all duplicate rows
-        df.drop_duplicates(inplace=True)
-        df.reset_index(drop=True, inplace=True)
+            # drop all duplicate rows
+            df.drop_duplicates(inplace=True)
+            df.reset_index(drop=True, inplace=True)
 
         valid_fields = [field for field in fields if 'omit' not in field]
         # data type conversion
         for it in valid_fields:
+            if it['name'] not in df.columns:
+                # df doesn't have this field
+                continue
+
             if it.get('attr') == 'date':
                 # format datetime
                 df[it['name']] = pd.to_datetime(df[it['name']])

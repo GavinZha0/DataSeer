@@ -19,6 +19,19 @@ DEFAULT_API_PORT = 7788
 START_API_PORT = 6000
 END_API_PORT = 9000
 
+async def get_model_schema(run_id: str):
+    os.environ["AWS_ACCESS_KEY_ID"] = settings.AWS_S3_ACCESS_ID
+    os.environ["AWS_SECRET_ACCESS_KEY"] = settings.AWS_S3_SECRET_KEY
+    os.environ["MLFLOW_S3_ENDPOINT_URL"] = settings.AWS_S3_ENDPOINT
+
+    mlflow.set_tracking_uri(settings.SQLALCHEMY_MLFLOW_DB_URL)
+    model_info = mlflow.models.get_model_info(f"runs:/{run_id}/model")
+    model_sign:mlflow.models.signature.ModelSignature = model_info.signature
+
+    return dict(inputs=model_sign.inputs.to_dict(), outputs=model_sign.outputs.to_dict())
+
+
+
 async def model_deploy(run_id: str, platform: str, endpoint: str, img_name: str):
     os.environ["AWS_ACCESS_KEY_ID"] = settings.AWS_S3_ACCESS_ID
     os.environ["AWS_SECRET_ACCESS_KEY"] = settings.AWS_S3_SECRET_KEY

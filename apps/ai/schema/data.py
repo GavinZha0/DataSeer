@@ -18,7 +18,7 @@ class Data(BaseModel):
     group: str = Field(..., title="Group")
     modelId: int | None = Field(None, title="Model Id", alias='model_id')
     dataset: str | None = Field(None, title="Dataset")
-    fields: str | None = Field(None, title="Fields")
+    fieldMap: str | None = Field(None, title="Field map", alias='field_map')
     result: str | None = Field(None, title="Result")
     public: bool = Field(False, title="Is public")
     orgId: int = Field(..., title="Org id", alias='org_id')
@@ -28,5 +28,7 @@ class Data(BaseModel):
     updatedAt: DatetimeStr | None = Field(..., title="Updated at", alias='updated_at')
 
 class AiDataExecute(BaseModel):
+    mId: int | None = Field(None, title="Model Id")
+    transform: bool | None = Field(False, title="Transform")
     endpoint: str = Field(..., title="Endpoint")
     data: dict = Field(..., title="Data")

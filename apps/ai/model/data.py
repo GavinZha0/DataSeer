@@ -20,7 +20,7 @@ class AiData(BaseDbModel):
     group: Mapped[Optional[str]] = mapped_column(String(64), default='default', comment="Group")
     model_id: Mapped[int] = mapped_column(Integer, comment="ModelId")
     dataset: Mapped[Optional[str]] = mapped_column(Text, comment="Dataset")
-    fields: Mapped[Optional[str]] = mapped_column(Text, comment="Field")
+    field_map: Mapped[Optional[str]] = mapped_column(Text, comment="Field map")
     result: Mapped[Optional[str]] = mapped_column(Text, comment="Result")
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Is public")
 
