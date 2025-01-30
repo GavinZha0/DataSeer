@@ -642,7 +642,7 @@ def plt_stat_outlier(cfg, df, fields):
     valid_fields = [field['name'] for field in fields if 'omit' not in field]
     target_field = [field['name'] for field in fields if 'target' in field]
     feature_fields = list(set(valid_fields).difference(set(target_field)))
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti' and 'target' not in field] + \
+    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                  [field['name'] for field in fields if field['attr'] == 'disc' and 'target' not in field]
     fig = go.Figure()
 
@@ -793,7 +793,7 @@ def plt_stat_outlier(cfg, df, fields):
             y_pred = [1 if i < 0 else 0 for i in clf.labels_]
         case 'cof':
             # Connectivity-Based Outlier Factor (COF, LOF的变种)
-            clf = COF(contamination=0.05, n_neighbors=15)
+            clf = COF(contamination=0.04, n_neighbors=15)
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
         case 'iforest':
@@ -807,7 +807,7 @@ def plt_stat_outlier(cfg, df, fields):
                 kernel = cfg['kernel']
             # One-Class SVM
             # kernel: 'linear', 'poly', 'rbf', 'sigmoid', 'precomputed'
-            clf = OCSVM(nu=0.05, contamination=0.05, kernel=kernel)
+            clf = OCSVM(nu=0.03, contamination=0.03, kernel=kernel)
             clf.fit(df[num_fields])
             y_pred = clf.labels_
         case 'som':
@@ -815,7 +815,7 @@ def plt_stat_outlier(cfg, df, fields):
             # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
             # 无监督，非线性
             som = MiniSom(10, 10, len(num_fields), sigma=0.3, learning_rate=0.5, neighborhood_function='triangle')
-            som.train_batch(df[feature_fields].values, 100)
+            som.train_batch(df[num_fields].values, 100)
             quantization_errors = np.linalg.norm(som.quantization(df[num_fields].values) - df[num_fields].values, axis=1)
             error_treshold = np.percentile(quantization_errors, 95)
             # outlier is True

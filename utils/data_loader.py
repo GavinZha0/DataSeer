@@ -210,7 +210,7 @@ class DataLoader:
     transform data
     """
     async def transform(self, df: pd.DataFrame, fields: any, data_type: str = None):
-        if type is not None:
+        if data_type is not None:
             self.data_type = data_type
             # not train data
             self.train = False
