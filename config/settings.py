@@ -39,11 +39,11 @@ SECRET_KEY = 'Good good study! Day day up! Then walk out to have a look at the b
 """JWT algorithm"""
 ALGORITHM = "HS256"
 """token expire time (min)"""
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 """token refresh time"""
 REFRESH_TOKEN_EXPIRE_MINUTES = 1440 * 2
 """token cache time"""
-ACCESS_TOKEN_CACHE_MINUTES = 15
+ACCESS_TOKEN_CACHE_MINUTES = 30
 ACCESS_TOKEN_FIELD = "access-token"
 SHADOW_TOKEN_FIELD = "shadow-token"
 
@@ -108,3 +108,8 @@ RAY_ENABLE = False
 RAY_LOCAL_MODE = True
 RAY_NUM_CPU = 1
 RAY_NUM_GPU = 0
+
+"""
+FTP server config
+"""
+FTP_SERVER_PATH = "C:/Users/jichu/Workspace/ftp/"

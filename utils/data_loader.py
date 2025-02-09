@@ -12,7 +12,7 @@ import duckdb
 import io
 import ray
 from sqlalchemy.ext.asyncio import create_async_engine
-from config.settings import TEMP_DIR
+from config.settings import TEMP_DIR, FTP_SERVER_PATH
 from core.logger import logger
 import torch
 import torchvision
@@ -64,6 +64,9 @@ class DataLoader:
 
                 # create S3 engine
                 self.s3fs = boto3.client('s3', endpoint_url=f'{https[0]}//{urls[0]}', aws_access_key_id=source_info.username, aws_secret_access_key=self.psw)
+            case 'FTP':
+                # get data from local FTP server
+                self.ftp_url = FTP_SERVER_PATH + source_info.url
             case 'BUILDIN':
                 # for pytorch, huggingface, etc.
                 nothing = None
@@ -78,6 +81,8 @@ class DataLoader:
                     return await self.load_from_db(content, params)
                 case 'S3BUCKET':
                     return await self.load_from_bucket(content)
+                case 'FTP':
+                    return await self.load_from_ftp(content)
                 case 'BUILDIN':
                     return await self.load_from_buildin(content)
                 case '_':
@@ -183,6 +188,37 @@ class DataLoader:
         # run sql to get data then convert to dataframe
         return duckdb.sql(duck_sql).df()
 
+
+    async def load_from_ftp(self, content: str)->pd.DataFrame:
+        # find files from content and get file list
+        # ex: SELECT * FROM 'mldata/iris.csv'
+        file_list = [f.strip("'") for f in content.split(' ') if
+                     f.upper().endswith((".CSV'", ".JSON'", ".PARQUET'", ".TXT'"))]
+        # get unique files
+        file_list = list(set(file_list))
+        duck_sql = content
+        dfn = {}
+        df0 = df1 = df2 = None
+        for idx, f_name in enumerate(file_list):
+            obj = self.ftp_url + f_name
+            if f_name.upper().endswith(('.CSV')):
+                match idx:
+                    case 0:
+                        df0 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+                    case 1:
+                        df1 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+                    case 2:
+                        df2 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+            elif f_name.upper().endswith(('.JSON')):
+                match idx:
+                    case 0:
+                        df0 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+                    case 1:
+                        df1 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+                    case 2:
+                        df2 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+            duck_sql = duck_sql.replace(f_name, f'df{idx}')
+        return duckdb.sql(duck_sql).df()
 
     async def load_from_buildin(self, content: str):
         if content.startswith('sklearn'):
@@ -304,9 +340,9 @@ class DataLoader:
                     case 'max':
                         df[field_name] = df[field_name].fillna(df[field_name].max())
                     case 'prev':
-                        df[field_name] = df[field_name].fillna(method='ffill')
+                        df[field_name] = df[field_name].ffill()
                     case 'next':
-                        df[field_name] = df[field_name].fillna(method='bfill')
+                        df[field_name] = df[field_name].bfill()
                     case 'zero':
                         df[field_name] = df[field_name].fillna(value=0)
                     case '_':
@@ -424,9 +460,9 @@ class DataLoader:
                     case 'max':
                         df[field_name] = df[field_name].fillna(df[field_name].max())
                     case 'prev':
-                        df[field_name] = df[field_name].fillna(method='ffill')
+                        df[field_name] = df[field_name].ffill()
                     case 'next':
-                        df[field_name] = df[field_name].fillna(method='bfill')
+                        df[field_name] = df[field_name].bfill()
                     case 'zero':
                         df[field_name] = df[field_name].fillna(value=0)
                     case '_':

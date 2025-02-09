@@ -8,7 +8,7 @@ from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.split import split
 from gluonts.torch import DeepAREstimator
 from minisom import MiniSom
-# import umap
+from pyod.models import vae
 from pyod.models.knn import KNN
 from sklearn import manifold
 from sklearn.cluster import DBSCAN
@@ -654,19 +654,27 @@ def plt_stat_outlier(cfg, df, fields):
     if cfg.get('metric'):
         metric = cfg['metric']
 
+    # contamination: 默认为0.05，即5%的异常值
+    # irq_coff: 默认为1.6，即1.6倍IQR
+    # sigma_coff: 默认为3，即3倍标准差
+    # use same parameter name for all methods
+    threshold = None
+    if cfg.get('threshold'):
+        threshold = cfg['threshold']
+
     y_pred = None
     match method:
         case 'quantile':
-            coff = 1.6
-            if cfg.get('iqr'):
-                coff = cfg['iqr']
+            # distribution-based
+            iqr_coff = threshold if threshold else 1.6
 
             # get statistics info
+            # IQR: InterQuartile range (四分位距)
             stat = df[num_fields].describe()
             # Inter Quantile Range
             iqr = stat.loc['75%'] - stat.loc['25%']
-            th_l = stat.loc['25%'] - iqr * coff
-            th_u = stat.loc['75%'] + iqr * coff
+            th_l = stat.loc['25%'] - iqr * iqr_coff
+            th_u = stat.loc['75%'] + iqr * iqr_coff
             outers = df[num_fields][(df[num_fields] < th_l) | (df[num_fields] > th_u)]
             outers = outers.dropna(axis=0, how='all').dropna(axis=1, how='all')
 
@@ -693,15 +701,14 @@ def plt_stat_outlier(cfg, df, fields):
             fig.update_layout(height=num_row * 400, showlegend=False)
             return fig
         case 'zscore':
-            coff = 3
-            if cfg.get('sigma'):
-                coff = cfg['sigma']
+            # distribution-based
+            sigma_coff = threshold if threshold else 3
 
             # get statistics info
             stat = df[num_fields].describe()
             # 3 sigma line
-            n3 = (stat.loc['mean'] - stat.loc['std'] * coff).round(3)
-            p3 = (stat.loc['mean'] + stat.loc['std'] * coff).round(3)
+            n3 = (stat.loc['mean'] - stat.loc['std'] * sigma_coff).round(3)
+            p3 = (stat.loc['mean'] + stat.loc['std'] * sigma_coff).round(3)
             # outliers
             outer_l = df[num_fields][df[num_fields] < n3]
             outer_u = df[num_fields][df[num_fields] > p3]
@@ -761,66 +768,85 @@ def plt_stat_outlier(cfg, df, fields):
                               line=dict(dash="dot"), row=(idx // num_col) + 1, col=(idx % num_col) + 1)
             fig.update_layout(height=400 * num_row, showlegend=False, hovermode='x')
             return fig
+        case 'dbscan':
+            # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
+            #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
+            #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
+            #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
+            # 'minkowski' does not work
+            distance = threshold if threshold else 0.5
+            clf = DBSCAN(eps=distance, metric=metric)
+            clf.fit(df[num_fields])
+            y_pred = [1 if i < 0 else 0 for i in clf.labels_]
+        case 'svm':
+            kernel = 'rbf'
+            if cfg.get('kernel'):
+                kernel = cfg['kernel']
+            # One-Class SVM (classfication-based)
+            # kernel: 'linear', 'poly', 'rbf', 'sigmoid', 'precomputed'
+            cont_ratio = threshold if threshold else 0.05
+            clf = OCSVM(nu=0.5, contamination=cont_ratio, kernel=kernel)
+            clf.fit(df[num_fields])
+            y_pred = clf.labels_
         case 'knn':
-            #  K-Nearest Neighbors
+            #  K-Nearest Neighbors (distance-based)
             # ['braycurtis', 'canberra', 'chebyshev',
             # 'correlation', 'dice', 'hamming', 'jaccard', 'kulsinski',
             # 'mahalanobis', 'matching', 'minkowski', 'rogerstanimoto',
             # 'russellrao', 'seuclidean', 'sokalmichener', 'sokalsneath',
             # 'sqeuclidean', 'yule']
             # 'correlation' does not work
-            clf = KNN(contamination=0.05, n_neighbors=5, method='mean', metric=metric)
+            # contamination: proportion of outliers
+            cont_ratio = threshold if threshold else 0.05
+            clf = KNN(contamination=cont_ratio, n_neighbors=5, method='mean', metric=metric)
             clf.fit(df[num_fields])
             # 1: outlier
             y_pred = clf.labels_
         case 'lof':
-            # Local Outlier Factor(局部利群因子)
+            # Local Outlier Factor(局部利群因子, density-based)
             # ['braycurtis', 'canberra', 'chebyshev',
             # 'correlation', 'dice', 'hamming', 'jaccard', 'kulsinski',
             # 'mahalanobis', 'matching', 'minkowski', 'rogerstanimoto',
             # 'russellrao', 'seuclidean', 'sokalmichener', 'sokalsneath',
             # 'sqeuclidean', 'yule']
-            clf = LOF(contamination=0.05, n_neighbors=10, metric=metric)
-            y_pred = clf.fit_predict(df[num_fields].drop(columns=target_field))
-        case 'dbscan':
-            # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法
-            #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
-            #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
-            #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
-            # 'minkowski' does not work
-            clf = DBSCAN(eps=1, metric=metric)
-            clf.fit(df[num_fields])
-            y_pred = [1 if i < 0 else 0 for i in clf.labels_]
+            cont_ratio = threshold if threshold else 0.05
+            clf = LOF(contamination=cont_ratio, n_neighbors=10, metric=metric)
+            y_pred = clf.fit_predict(df[num_fields])
         case 'cof':
-            # Connectivity-Based Outlier Factor (COF, LOF的变种)
-            clf = COF(contamination=0.04, n_neighbors=15)
+            # Connectivity-Based Outlier Factor (COF, LOF的变种, density-based)
+            cont_ratio = threshold if threshold else 0.05
+            clf = COF(contamination=cont_ratio, n_neighbors=15)
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
         case 'iforest':
-            # Isolation Forest(孤立森林)
-            clf = IForest(contamination=0.05, n_estimators=100)
+            # Isolation Forest(孤立森林, tree-based)
+            # unsupervised, global outlier detection
+            # contamination: percentage of outliers
+            # n_estimators: total of trees
+            cont_ratio = threshold if threshold else 0.05
+            clf = IForest(contamination=cont_ratio, n_estimators=100, max_samples='auto')
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
-        case 'svm':
-            kernel = 'rbf'
-            if cfg.get('kernel'):
-                kernel = cfg['kernel']
-            # One-Class SVM
-            # kernel: 'linear', 'poly', 'rbf', 'sigmoid', 'precomputed'
-            clf = OCSVM(nu=0.03, contamination=0.03, kernel=kernel)
-            clf.fit(df[num_fields])
-            y_pred = clf.labels_
         case 'som':
             # self-organizing map(自组织映射算法)
             # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
             # 无监督，非线性
-            som = MiniSom(10, 10, len(num_fields), sigma=0.3, learning_rate=0.5, neighborhood_function='triangle')
+            cont_ratio = threshold if threshold else 0.05
+            som = MiniSom(10, 10, len(num_fields), sigma=0.3, learning_rate=0.1, neighborhood_function='triangle')
             som.train_batch(df[num_fields].values, 100)
             quantization_errors = np.linalg.norm(som.quantization(df[num_fields].values) - df[num_fields].values, axis=1)
-            error_treshold = np.percentile(quantization_errors, 95)
+            error_treshold = np.percentile(quantization_errors, (1-cont_ratio)*100)
             # outlier is True
             is_outlier = quantization_errors > error_treshold
+            # 1: outlier
             y_pred = is_outlier.astype(int)
+        case 'vae':
+            # AutoEncoder(自编码器, unsupervised, neural network)
+            cont_ratio = threshold if threshold else 0.05
+            auto_encoder = vae.VAE(epoch_num=50, batch_size=32, contamination=cont_ratio)
+            auto_encoder.fit(df[num_fields])
+            # 1: outlier
+            y_pred = auto_encoder.predict(df[num_fields])
         case '_':
             return fig
 
@@ -830,6 +856,7 @@ def plt_stat_outlier(cfg, df, fields):
         dim = 3
 
     if len(num_fields)==1:
+        # time series with one value field
         date_fields = [field['name'] for field in fields if field['attr'] == 'date' or 'timeline' in field]
         df.set_index(date_fields[0], inplace=True)
         if len(date_fields) > 0:
@@ -2140,12 +2167,12 @@ def plt_ts_predict(tsn, cfg, df, fields):
     elif period.startswith('M'):
         dt_idx = dt_idx.strftime('%Y-%m')
 
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vf], name=vf, mode='lines'))
+    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vf], name=vf, mode='lines', connectgaps=True))
     if isinstance(dt_idx, pd.PeriodIndex):
         dt_idx = dt_idx.start_time
 
     if algo == 'deepar':
-            fig.add_trace(go.Scatter(x=dt_idx, y=pred.median, name='Prediction', mode='lines'))
+            fig.add_trace(go.Scatter(x=dt_idx, y=pred.median, name='Prediction', mode='lines', connectgaps=True))
     else:
-        fig.add_trace(go.Scatter(x=dt_idx, y=pred.values, name='Prediction', mode='lines'))
+        fig.add_trace(go.Scatter(x=dt_idx, y=pred.values, name='Prediction', mode='lines', connectgaps=True))
     return fig

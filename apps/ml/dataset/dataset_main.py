@@ -67,6 +67,8 @@ async def get_data_stat(type: str, df: any, limit: int = None):
                             if date_time is not None:
                                 type_list.append('datetime')
                                 df[col] = pd.to_datetime(df[col], errors='coerce')
+                            else:
+                                type_list.append(df[col].dtypes.name)
                         else:
                             type_list.append(df[col].dtypes.name)
                     else:
@@ -82,6 +84,10 @@ async def get_data_stat(type: str, df: any, limit: int = None):
             ts_col = df.select_dtypes(include='datetime').columns.tolist()
             if ts_col is not None:
                 for col in ts_col:
+                    # Minimum time interval
+                    min_diff = int(df[col].diff().min().round('min').seconds/60)
+                    desc.loc['gap', col] = min_diff if min_diff > 0 else 1
+
                     df[col] = df[col].astype('str')
                     desc[col] = desc[col].replace(np.nan, '')
                     desc[col] = desc[col].astype('str')
