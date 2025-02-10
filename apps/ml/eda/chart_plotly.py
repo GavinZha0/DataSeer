@@ -8,7 +8,7 @@ from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.split import split
 from gluonts.torch import DeepAREstimator
 from minisom import MiniSom
-from pyod.models import vae
+from pyod.models import vae, dif, ecod, xgbod, ae1svm, devnet, deep_svdd
 from pyod.models.knn import KNN
 from sklearn import manifold
 from sklearn.cluster import DBSCAN
@@ -38,6 +38,7 @@ from sktime.forecasting.trend import PolynomialTrendForecaster
 import matplotlib.pyplot as plt
 from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, feature_iter_search, feature_auto_detect
 from neuralprophet import NeuralProphet
+from statsmodels.tsa.arima.model import ARIMA
 
 # has warning: Importing plotly failed. Interactive plots will not work.
 from prophet import Prophet
@@ -399,6 +400,9 @@ def plt_ts_chart(kind, config, df, fields):
         case 'predict':
             # prediction
             fig = plt_ts_predict(ts_field, config, df, fields)
+        case 'anomaly':
+            # anomaly detection
+            fig = plt_ts_anomaly(ts_field, config, df, fields)
         case _:
             fig = None
 
@@ -1400,7 +1404,7 @@ def plt_dist_kde2d(cfg, df, fields):
 plt ts trending chart
 {"pid": "ts", "tf": "time", "period": "YE", "agg": "mean", "solo": true, "connected": true}
 """
-def plt_ts_overview(tsn, cfg, df, fields):
+def plt_ts_overview(tsf, cfg, df, fields):
     fig = go.Figure()
     range_min = df.index.min()
     range_max = df.index.max()
@@ -1415,7 +1419,7 @@ def plt_ts_overview(tsn, cfg, df, fields):
 plt ts trending chart
 {"pid": "ts", "tf": "time", "period": "YE", "agg": "mean", "solo": true, "connected": true}
 """
-def plt_ts_series(tsn, cfg, df, fields):
+def plt_ts_series(tsf, cfg, df, fields):
     fig = go.Figure()
     num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                  [field['name'] for field in fields if field['attr'] == 'disc']
@@ -1447,7 +1451,7 @@ def plt_ts_series(tsn, cfg, df, fields):
             ts_df.index = ts_df.index.strftime('%Y-Q%q')
     else:
         # without aggregation
-        ts_df = df.groupby(tsn).agg(agg_cfg)
+        ts_df = df.groupby(tsf).agg(agg_cfg)
 
     if cfg.get('solo'):
         # put curves on separated charts
@@ -1472,7 +1476,7 @@ plt ts trending line chart
 # ols(线性普通最小二乘), lowess(局部加权线性回归), rolling(移动平均线), ewm(指数加权移动平均), expanding(扩展窗)
 {"pid": "ts", "ts": "date", "vf": "open",  "period": "M", "agg": "mean", "frac": 0.6}
 """
-def plt_ts_trend(tsn, cfg, df, fields):
+def plt_ts_trend(tsf, cfg, df, fields):
     # value field
     if cfg.get('vf') is None or cfg.get('period') is None:
         return None
@@ -1553,7 +1557,7 @@ plt ts difference chart
 # 差分，与前面diff个周期值的差，可见指标增长或下降
 {"pid": "ts", "ts": "time", "period": "YE", "agg": "mean", "solo": false, "field": "dena72", "diff": 1}
 """
-def plt_ts_diff(tsn, cfg, df, fields):
+def plt_ts_diff(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('period') is None:
         return fig
@@ -1612,7 +1616,7 @@ plt ts frequency chart
 尽量选择一个完整的周期，如2020-08-05 到2-24-08-05
 {"pid": "ts", "ts": "time", "field": "dena74", "agg": "sum"}
 """
-def plt_ts_freq(tsn, cfg, df, fields):
+def plt_ts_freq(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('vf') is None:
         return fig
@@ -1631,48 +1635,48 @@ def plt_ts_freq(tsn, cfg, df, fields):
 
     # Quarterly
     # aaaa = df.resample('Q').asfreq()
-    ts_df = pd.DataFrame({tsn: df.index.quarter, vfield: df[vfield]})
-    ts_df.set_index(tsn, inplace=True)
-    gp_df = ts_df.groupby(tsn).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsn], data=range(1, 5, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsn, right_index=True, how="left")
+    ts_df = pd.DataFrame({tsf: df.index.quarter, vfield: df[vfield]})
+    ts_df.set_index(tsf, inplace=True)
+    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[tsf], data=range(1, 5, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
     fig.add_trace(
-        go.Bar(x='Q' + merged_df[tsn].astype('string'), y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 1)
+        go.Bar(x='Q' + merged_df[tsf].astype('string'), y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 1)
 
     # Monthly
-    ts_df = pd.DataFrame({tsn: df.index.strftime('%b'), vfield: df[vfield]})
-    ts_df.set_index(tsn, inplace=True)
-    gp_df = ts_df.groupby(tsn).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsn], data=pd.date_range(start='2024-01-01', end='2024-12-01', freq='MS')
+    ts_df = pd.DataFrame({tsf: df.index.strftime('%b'), vfield: df[vfield]})
+    ts_df.set_index(tsf, inplace=True)
+    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[tsf], data=pd.date_range(start='2024-01-01', end='2024-12-01', freq='MS')
                           .strftime('%b').to_list())
-    merged_df = pd.merge(per_df, gp_df, left_on=tsn, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsn], y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 2)
+    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 2)
 
     # Weekly
-    ts_df = pd.DataFrame({tsn: df.index.strftime('%a'), vfield: df[vfield]})
-    ts_df.set_index(tsn, inplace=True)
-    gp_df = ts_df.groupby(tsn).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsn],
+    ts_df = pd.DataFrame({tsf: df.index.strftime('%a'), vfield: df[vfield]})
+    ts_df.set_index(tsf, inplace=True)
+    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[tsf],
                           data=pd.date_range(start='2024-09-01', end='2024-09-07', freq='D')
                           .strftime('%a').to_list())
-    merged_df = pd.merge(per_df, gp_df, left_on=tsn, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsn], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 1)
+    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 1)
 
     # Hourly
-    ts_df = pd.DataFrame({tsn: df.index.hour, vfield: df[vfield]})
-    ts_df.set_index(tsn, inplace=True)
-    gp_df = ts_df.groupby(tsn).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsn], data=range(0, 24, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsn, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsn], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 2)
+    ts_df = pd.DataFrame({tsf: df.index.hour, vfield: df[vfield]})
+    ts_df.set_index(tsf, inplace=True)
+    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[tsf], data=range(0, 24, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 2)
 
     # Daily
-    ts_df = pd.DataFrame({tsn: df.index.day, vfield: df[vfield]})
-    ts_df.set_index(tsn, inplace=True)
-    gp_df = ts_df.groupby(tsn).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsn], data=range(1, 32, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsn, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsn], y=merged_df[vfield], name='', text=merged_df[vfield]), 3, 1)
+    ts_df = pd.DataFrame({tsf: df.index.day, vfield: df[vfield]})
+    ts_df.set_index(tsf, inplace=True)
+    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[tsf], data=range(1, 32, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 3, 1)
 
     fig.update_xaxes(type='category')
     fig.update_layout(title=title, showlegend=False)
@@ -1685,7 +1689,7 @@ plt ts compare chart
 # refer to https://pandas.pydata.org/docs/reference/api/pandas.Period.strftime.html
 {"pid": "ts", "ts": "time", "field": "dena74", "group": "m", "period": "Y", "agg": "sum"}
 """
-def plt_ts_compare(tsn, cfg, df, fields):
+def plt_ts_compare(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('groupby') is None or cfg.get('period') is None:
         return fig
@@ -1750,7 +1754,7 @@ plt ts ACF/PACF chart
 平稳序列：ACF衰减到0的速度很快，并且十分靠近0，并控制在2倍标准差内。
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "m", "agg": "sum", "lag": 20}
 """
-def plt_ts_acf(tsn, cfg, df, fields):
+def plt_ts_acf(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('period') is None or cfg.get('vf') is None:
         return fig
@@ -1812,7 +1816,7 @@ SMA：权重系数一致；WMA：权重系数随时间间隔线性递减；EMA�
 # window type: https://docs.scipy.org/doc/scipy/reference/signal.windows.html#module-scipy.signal.windows
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "m", "agg": "sum", "win": 3}
 """
-def plt_ts_mavg(tsn, cfg, df, fields):
+def plt_ts_mavg(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('period') is None or cfg.get('vf') is None:
         return fig
@@ -1852,7 +1856,7 @@ def plt_ts_mavg(tsn, cfg, df, fields):
 plt ts box/violin chart
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "Q", "violin": true}
 """
-def plt_ts_quantile(tsn, cfg, df, fields):
+def plt_ts_quantile(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('period') is None or cfg.get('vf') is None:
         return fig
@@ -1861,7 +1865,7 @@ def plt_ts_quantile(tsn, cfg, df, fields):
     vfield = cfg['vf']  # metrix field
     df.index = df.index.to_period(period)
     df.reset_index(inplace=True)
-    ts_df = df.groupby(tsn)
+    ts_df = df.groupby(tsf)
     if period.startswith('Y'):
         ts_format = '%Y'
     elif period.startswith('Q'):
@@ -1894,7 +1898,7 @@ def plt_ts_quantile(tsn, cfg, df, fields):
 plt ts cycle chart
 {"pid": "ts", "ts": "date", "field": "open",  "period": "M", "agg": "mean", "algo": "psd"}
 """
-def plt_ts_cycle(tsn, cfg, df, fields):
+def plt_ts_cycle(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
@@ -1928,7 +1932,7 @@ def plt_ts_cycle(tsn, cfg, df, fields):
             # 傅里叶变换和频谱分析
             freq, power = periodogram(ts_df[vfield])
             cycle = 1 / freq[np.argmax(power)]
-            # fig = px.scatter(ts_df, x=tsn, y=field)
+            # fig = px.scatter(ts_df, x=tsf, y=field)
             fig = px.line(x=freq, y=power, labels={'x': 'Freq', 'y': 'Power'})
         case '_':
             return fig
@@ -1947,7 +1951,7 @@ plt ts decomposition chart
 乘法模型：y（t）=季节*趋势*周期*噪音
 {"pid": "ts", "ts": "time", "field": "dena74",  "period": "D", "agg": "mean", "algo": "stl", "robust": true}
 """
-def plt_ts_decomp(tsn, cfg, df, fields):
+def plt_ts_decomp(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
@@ -2008,11 +2012,12 @@ plt ts predict chart
 # ols(线性普通最小二乘), lowess(局部加权线性回归), rolling(移动平均线), ewm(指数加权移动平均), expanding(扩展窗)
 {"pid": "ts", "ts": "time", "field": "dena74",  "period": "MS", "agg": "mean", "algo": "ets", "trend": "add", "season": "add"}
 """
-def plt_ts_predict(tsn, cfg, df, fields):
+def plt_ts_predict(tsf, cfg, df, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
 
+    # value field
     vf = cfg['vf']
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
     period = cfg['period']
@@ -2067,13 +2072,18 @@ def plt_ts_predict(tsn, cfg, df, fields):
             elif cfg['period'].startswith('W'):
                 param_m = 52
             temp_df = ts_df.head(len(ts_df)-7)
-
-            # the following issue when import pmdarima
+            # sktime.ARIMA requires package 'pmdarima'
+            # issue happens when import pmdarima
             # reason: numpy version is high
-            # numpy.dtype size changed, may indicate binary incompatibility. Expected 96 from C header, got 88 from PyObject
-            # md = pm.auto_arima(temp_df, d=1, D=1, max_P=3, max_D=3, max_Q=3, m=param_m, seasonal=True,
-            #                       trend='t', error_action='warn', trace=True, maxiter=10, n_jobs=3, n_fits=3)
-            # pred = md.predict(future_step+7)
+            # ARIMA for Stationary Time Series. update order(d) if not
+            # order = (p, d, q), p:偏自相关滞后p阶后变为0, d: 差分d次变为平稳序列, q: 自相关滞后q阶后变为0
+            # seasonal_order = (P, D, Q, s)
+            md = ARIMA(temp_df.values, order=(1, 1, 1), seasonal_order=(0, 0, 0, 12))
+            md_ft = md.fit()
+            tmp = ts_df.head(len(ts_df) // 2)
+            y_pred = md_ft.predict(start=len(tmp)+1, end=len(ts_df)+future_step, dynamic=True)
+            prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)-len(tmp)) + future_step, freq=period)
+            pred = pd.Series(y_pred.tolist(), index=prange)
         case 'autoarima':
             # 自动差分整合移动平均自回归模型
             # from sktime.datasets import load_airline
@@ -2175,4 +2185,129 @@ def plt_ts_predict(tsn, cfg, df, fields):
             fig.add_trace(go.Scatter(x=dt_idx, y=pred.median, name='Prediction', mode='lines', connectgaps=True))
     else:
         fig.add_trace(go.Scatter(x=dt_idx, y=pred.values, name='Prediction', mode='lines', connectgaps=True))
+    return fig
+
+
+"""
+plt ts anomaly detection chart
+{"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
+"""
+def plt_ts_anomaly(tsf, cfg, df, fields):
+    fig = go.Figure()
+    if cfg.get('vf') is None:
+        return fig
+
+    # value field
+    vf = cfg['vf']
+
+    method = 'quantile'
+    if cfg.get('method'):
+        method = cfg['method']
+
+    metric = 'euclidean'
+    if cfg.get('metric'):
+        metric = cfg['metric']
+
+    # contamination: 默认为0.05，即5%的异常值
+    # irq_coff: 默认为1.6，即1.6倍IQR
+    # sigma_coff: 默认为3，即3倍标准差
+    # use same parameter name for all methods
+    threshold = None
+    if cfg.get('threshold'):
+        threshold = cfg['threshold']
+
+    y_pred = None
+    match method:
+        case 'quantile':
+            # distribution-based
+            iqr_coff = threshold if threshold else 1.6
+
+            # get statistics info
+            # IQR: InterQuartile range (四分位距)
+            stat = df[vf].describe()
+            # Inter Quantile Range
+            iqr = stat.loc['75%'] - stat.loc['25%']
+            th_l = stat.loc['25%'] - iqr * iqr_coff
+            th_u = stat.loc['75%'] + iqr * iqr_coff
+            # 0: normal, 1: outlier
+            y_pred = [1 if v<th_l or v>th_u else 0 for v in df[vf].values]
+        case 'zscore':
+            # distribution-based
+            sigma_coff = threshold if threshold else 3
+
+            # get statistics info
+            stat = df[vf].describe()
+            # 3 sigma line
+            th_l = (stat.loc['mean'] - stat.loc['std'] * sigma_coff).round(3)
+            th_u = (stat.loc['mean'] + stat.loc['std'] * sigma_coff).round(3)
+            y_pred = [1 if v<th_l or v>th_u else 0 for v in df[vf].values]
+        case 'dbscan':
+            # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
+            #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
+            #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
+            #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
+            # 'minkowski' does not work
+            distance = threshold if threshold else 0.5
+            clf = DBSCAN(eps=distance, metric=metric)
+            clf.fit(df[[vf]])
+            y_pred = [1 if i < 0 else 0 for i in clf.labels_]
+        case 'cof':
+            # Connectivity-Based Outlier Factor (COF, LOF的变种, density-based)
+            cont_ratio = threshold if threshold else 0.05
+            clf = COF(contamination=cont_ratio, n_neighbors=15)
+            clf.fit(df[[vf]])
+            y_pred = clf.predict(df[[vf]])
+        case 'vae':
+            # AutoEncoder(自编码器, unsupervised, neural network)
+            cont_ratio = threshold if threshold else 0.05
+            clf = vae.VAE(epoch_num=50, batch_size=32, contamination=cont_ratio)
+            clf.fit(df[[vf]])
+            # 1: outlier
+            y_pred = clf.labels_
+        case 'dif':
+            # Deep Isolation Forest
+            clf = dif.DIF(batch_size=64)
+            clf.fit(df[[vf]])
+            y_pred = clf.labels_
+        case 'ecod':
+            cont_ratio = threshold if threshold else 0.05
+            clf = ecod.ECOD(contamination=cont_ratio)
+            clf.fit(df[[vf]])
+            y_pred = clf.labels_
+        case 'dsvdd':
+            cont_ratio = threshold if threshold else 0.05
+            clf = deep_svdd.DeepSVDD(n_features=1, epochs=100, contamination=cont_ratio)
+            clf.fit(df[[vf]])
+            y_pred = clf.labels_
+        case 'ae1svm':
+            cont_ratio = threshold if threshold else 0.05
+            clf = ae1svm.AE1SVM(contamination=cont_ratio)
+            clf.fit(df[[vf]])
+            y_pred = clf.labels_
+        case '_':
+            return fig
+
+
+    # show univariate time series
+    outlier_df = pd.DataFrame(df[vf] * y_pred)
+    outlier_df = outlier_df[outlier_df[vf] > 0]
+
+    # two subplots
+    fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], vertical_spacing=0.1)
+    # original data line
+    fig.add_trace(go.Scatter(x=df.index, y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
+    # outlier markers
+    fig.add_trace(go.Scatter(x=outlier_df.index, y=outlier_df[vf], name='outlier', line=dict(color="#ff0000"),
+                             mode='markers', hovertemplate='%{y}<extra></extra>'), 1, 1)
+
+    if method == 'quantile' or method == 'zscore':
+        # add threshold
+        fig.add_shape(editable=False, type="line", x0=df.index.min(), x1=df.index.max(), y0=th_l, y1=th_l,
+                      line=dict(dash="dot"), row=1, col=1)
+        fig.add_shape(editable=False, type="line", x0=df.index.min(), x1=df.index.max(), y0=th_u, y1=th_u,
+                      line=dict(dash="dot"), row=1, col=1)
+
+    # outliers with binary index (0 or 1)
+    fig.add_trace(go.Scatter(x=df.index, y=y_pred, name='binary index', hovertemplate='%{y}<extra></extra>'), 2, 1)
+    fig.update_layout(hovermode='x')
     return fig
