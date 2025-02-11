@@ -39,7 +39,6 @@ import matplotlib.pyplot as plt
 from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, feature_iter_search, feature_auto_detect
 from neuralprophet import NeuralProphet
 from statsmodels.tsa.arima.model import ARIMA
-
 # has warning: Importing plotly failed. Interactive plots will not work.
 from prophet import Prophet
 
@@ -1482,18 +1481,12 @@ def plt_ts_trend(tsf, cfg, df, fields):
         return None
 
     vfield = cfg['vf']
-    period = cfg['period']
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'  # default
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
     connected = False
     if cfg.get('connected'):
         connected = cfg['connected']
 
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df = df.resample(period).agg(agg)
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
     if period.startswith('Y'):
         # show year only (don't show month and day for Y)
         ts_df.index = ts_df.index.strftime('%Y')
@@ -1555,7 +1548,7 @@ def plt_ts_trend(tsf, cfg, df, fields):
 """
 plt ts difference chart
 # 差分，与前面diff个周期值的差，可见指标增长或下降
-{"pid": "ts", "ts": "time", "period": "YE", "agg": "mean", "solo": false, "field": "dena72", "diff": 1}
+{"pid": "ts", "ts": "time", "period": "YE", "agg": "mean", "solo": false, "field": "dena72", "diff": 1, "step": 1}
 """
 def plt_ts_diff(tsf, cfg, df, fields):
     fig = go.Figure()
@@ -1567,6 +1560,10 @@ def plt_ts_diff(tsf, cfg, df, fields):
     diff = 1
     if cfg.get('diff'):
         diff = cfg['diff']
+
+    step = 1
+    if cfg.get('step'):
+        step = cfg['step']
 
     # agg: sum, mean, median, min, max, std, count
     agg = 'mean'  # default
@@ -1582,19 +1579,22 @@ def plt_ts_diff(tsf, cfg, df, fields):
         for nf in num_fields:
             agg_cfg[nf] = agg
 
-    # aggregated by period (YE,QS,MS,W,D,h,min,s)
-    ts_df = df.resample(cfg['period']).agg(agg_cfg)
-    if cfg['period'].startswith('Y'):
+    # aggregated by period (YS,QS,MS,W,D,h,min,s)
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
+
+    if period.startswith('Y'):
         # show year only (don't show month and day for Y)
         ts_df.index = ts_df.index.strftime('%Y')
 
     if vf:
         # specific value field
-        ts_df[vf] = ts_df[vf].diff(periods=diff)
+        for i in range(step):
+            ts_df[vf] = ts_df[vf].diff(periods=diff)
         fig.add_trace(go.Bar(x=ts_df.index, y=ts_df[vf], name=vf))
         fig.update_layout(height=800, hovermode='x')
     else:
-        ts_df[num_fields] = ts_df[num_fields].diff(periods=diff)
+        for i in range(step):
+            ts_df[num_fields] = ts_df[num_fields].diff(periods=diff)
         if cfg.get('solo'):
             # put curves on separated charts
             rows = len(num_fields)
@@ -1752,6 +1752,9 @@ plt ts ACF/PACF chart
 单调序列：ACF衰减到0的速度很慢，而且可能一直为正，或一直为负，或先正后负，或先负后正。
 周期序列：ACF呈正弦波动规律。
 平稳序列：ACF衰减到0的速度很快，并且十分靠近0，并控制在2倍标准差内。
+根据ACF/PACF确定ARIMA模型p，q值: 如果说自相关图拖尾，并且偏自相关图在p阶截尾时，此模型应该为AR(p)。如果说自相关图在q阶截尾并且偏自相关图拖尾时，此模型应该为MA(q)。
+如果说自相关图和偏自相关图均显示为拖尾，那么可结合ACF图中最显著的阶数作为q值，选择PACF中最显著的阶数作为p值，最终建立ARMA(p,q)模型。
+如果说自相关图和偏自相关图均显示为截尾，那么说明不适合建立ARIMA模型。
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "m", "agg": "sum", "lag": 20}
 """
 def plt_ts_acf(tsf, cfg, df, fields):
@@ -1762,11 +1765,7 @@ def plt_ts_acf(tsf, cfg, df, fields):
     # group by date field and period(YE,Q,M,W,D,H,min,s) then aggregate numerical fields
     # agg: sum, mean, median, min, max, count
     vfield = cfg['vf']
-    agg = 'mean'
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
-    ts_df = df.resample(cfg['period']).agg(agg)
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
 
     lag = 10
     if cfg.get('lag'):
@@ -1818,22 +1817,17 @@ SMA：权重系数一致；WMA：权重系数随时间间隔线性递减；EMA�
 """
 def plt_ts_mavg(tsf, cfg, df, fields):
     fig = go.Figure()
-    if cfg.get('period') is None or cfg.get('vf') is None:
+    if cfg.get('vf') is None:
         return fig
 
     vfield = cfg['vf']
-    # agg: sum, mean, median, min, max, count
-    agg = 'mean'
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
     win = 3
     if cfg.get('win'):
         win = cfg['win']
 
     # group by date field and period(YS,QS,MS,W,D,H,min,s) then aggregate numerical fields
     # agg data based on period first
-    ts_df = df.resample(cfg['period']).agg(agg)
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
 
     min_per = win
     if isinstance(win, int):
@@ -1900,22 +1894,16 @@ plt ts cycle chart
 """
 def plt_ts_cycle(tsf, cfg, df, fields):
     fig = go.Figure()
-    if cfg.get('vf') is None or cfg.get('period') is None:
+    if cfg.get('vf') is None:
         return fig
 
     vfield = cfg['vf']
-    period = cfg['period']
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'  # default
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df = df.resample(period).agg(agg)
-    if period.startswith('Y'):
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    if period is not None and period.startswith('Y'):
         # show year only (don't show month and day for Y)
         ts_df.index = ts_df.index.strftime('%Y')
-    elif period.startswith('Q'):
+    elif period is not None and period.startswith('Q'):
         # convert to period for getting quarters
         ts_df.index = ts_df.index.to_period('Q')
         ts_df.index = ts_df.index.strftime('%Y-Q%q')
@@ -1949,6 +1937,7 @@ def plt_ts_cycle(tsf, cfg, df, fields):
 plt ts decomposition chart
 加法模型：y（t）=季节+趋势+周期+噪音
 乘法模型：y（t）=季节*趋势*周期*噪音
+# doesn't support 'min' and 's'
 {"pid": "ts", "ts": "time", "field": "dena74",  "period": "D", "agg": "mean", "algo": "stl", "robust": true}
 """
 def plt_ts_decomp(tsf, cfg, df, fields):
@@ -1957,14 +1946,9 @@ def plt_ts_decomp(tsf, cfg, df, fields):
         return fig
 
     vfield = cfg['vf']
-    period = cfg['period']
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'  # default
-    if cfg.get('agg'):
-        agg = cfg['agg']
+    # aggregated by period (YS,QS,MS,W,D,h)
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
 
-    # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df = df.resample(period).agg(agg).ffill()
     if period.startswith('Y'):
         # show year only (don't show month and day for Y)
         ts_df.index = ts_df.index.strftime('%Y')
@@ -2017,16 +2001,6 @@ def plt_ts_predict(tsf, cfg, df, fields):
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
 
-    # value field
-    vf = cfg['vf']
-    # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    period = cfg['period']
-
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
     algo = 'ets'
     if cfg.get('algo'):
         algo = cfg['algo']
@@ -2044,7 +2018,9 @@ def plt_ts_predict(tsf, cfg, df, fields):
         season = cfg['season']
 
     future_step = 14
-    ts_df = df.resample(period).agg(agg)
+    vf = cfg['vf']
+    ts_df, period = ts_resample(tsf, cfg, df, fields)
+
     match algo:
         case 'ses':
             # Simple Exponential Smoothing(没有趋势和季节性)
@@ -2105,6 +2081,8 @@ def plt_ts_predict(tsf, cfg, df, fields):
             period_unit = period
             if period and period == 'MS':
                 period_unit = 'M'
+            if period and period == 'min':
+                period_unit = '5min'
             t_series = pd.Series(temp_df.values.T[0], index=temp_df.index.to_period(period_unit))
             # season period estimation
             sp_est = SeasonalityACF()
@@ -2116,7 +2094,7 @@ def plt_ts_predict(tsf, cfg, df, fields):
                 # season: 'add' or 'mul'
                 md = AutoETS(trend=trend, seasonal=season[:3], sp=12).fit(t_series)
             else:
-                md = AutoETS(auto=True, sp=12).fit(t_series)
+                md = AutoETS(auto=True).fit(t_series)
 
             # autoETS asks Series, not Dataframe
             # prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
@@ -2197,9 +2175,6 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
     if cfg.get('vf') is None:
         return fig
 
-    # value field
-    vf = cfg['vf']
-
     method = 'quantile'
     if cfg.get('method'):
         method = cfg['method']
@@ -2216,6 +2191,8 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
     if cfg.get('threshold'):
         threshold = cfg['threshold']
 
+    vf = cfg['vf']
+    df, period = ts_resample(tsf, cfg, df, fields)
     y_pred = None
     match method:
         case 'quantile':
@@ -2311,3 +2288,49 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
     fig.add_trace(go.Scatter(x=df.index, y=y_pred, name='binary index', hovertemplate='%{y}<extra></extra>'), 2, 1)
     fig.update_layout(hovermode='x')
     return fig
+
+
+def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
+    ts_df = df
+    # agg: sum, mean, median, min, max, std, count
+    agg = 'mean'
+    if cfg.get('agg'):
+        agg = cfg['agg']
+
+    # aggregated by period (YS,QS,MS,W,D,h,min,s)
+    period = cfg.get('period', None)
+    if period is not None:
+        for field in fields:
+            if field.get('name') == tsf and field.get('gap'):
+                period_min = int(field.get('gap'))
+                if period_min < 60 and (period == 'min' or period == 's'):
+                    # update period to min period of this time series
+                    period = f'{period_min}min'
+                    break
+                elif period_min > 60 and period_min < 1440 and (period == 'h' or period == 'min' or period == 's'):
+                    # update period to min period of this time series
+                    period_h = math.ceil(period_min / 60)
+                    period = f'{period_h}H'
+                    break
+        ts_df = df.resample(period).agg(agg)
+
+    # value field
+    num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
+    # handle missing value
+    for field in num_fields:
+        vf = field['name']
+        if ts_df[vf].isnull().any() and field.get('miss'):
+            match field['miss']:
+                case 'mean':
+                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].mean())
+                case 'median':
+                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].median())
+                case 'mode':
+                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].mode())
+                case 'prev':
+                    ts_df[vf] = ts_df[vf].ffill()
+                case 'next':
+                    ts_df[vf] = ts_df[vf].bfill()
+                case 'zero':
+                    ts_df[vf] = ts_df[vf].fillna(value=0)
+    return ts_df, period
