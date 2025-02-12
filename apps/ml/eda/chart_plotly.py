@@ -38,7 +38,7 @@ from sktime.param_est.seasonality import SeasonalityACF
 from sktime.forecasting.trend import PolynomialTrendForecaster
 import matplotlib.pyplot as plt
 from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, feature_iter_search, feature_auto_detect
-from neuralprophet import NeuralProphet
+# from neuralprophet import NeuralProphet
 from statsmodels.tsa.arima.model import ARIMA
 from sktime.forecasting.fbprophet import Prophet
 
@@ -2107,6 +2107,7 @@ def plt_ts_predict(tsf, cfg, df, fields):
         case 'natureprophet':
             # neuralprophet 0.9.0 requires numpy<2.0.0,>=1.25.0, but you have numpy 2.0.2 which is incompatible.
             temp_df = ts_df.head(len(ts_df) - 7)
+            '''
             tmp = ts_df.head(len(ts_df) // 2)
             idx_name = temp_df.index.name
             temp_df.reset_index(inplace=True)
@@ -2118,6 +2119,7 @@ def plt_ts_predict(tsf, cfg, df, fields):
             pred.set_index('ds', inplace=True)
             # trend, yhat
             pred = pred['yhat']
+            '''
         case 'tsfm':
             # TimesFMForecaster requires python version to be <3.11,>=3.10
             tmp = ts_df.head(len(ts_df) // 2)
