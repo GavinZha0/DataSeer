@@ -18,6 +18,7 @@ import plotly.figure_factory as ff
 from scipy import stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from sktime.forecasting.timesfm_forecaster import TimesFMForecaster
 from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
 from statsmodels.tsa.api import STL
 import statsmodels.tsa.seasonal as sm_seasonal
@@ -39,8 +40,7 @@ import matplotlib.pyplot as plt
 from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, feature_iter_search, feature_auto_detect
 from neuralprophet import NeuralProphet
 from statsmodels.tsa.arima.model import ARIMA
-# has warning: Importing plotly failed. Interactive plots will not work.
-from prophet import Prophet
+from sktime.forecasting.fbprophet import Prophet
 
 """
 build chart of statistics
@@ -1912,7 +1912,6 @@ def plt_ts_cycle(tsf, cfg, df, fields):
     if cfg.get('algo'):
         algo = cfg['algo']
 
-    title = 'Periodicity detection ({})'
     ts_df.reset_index(inplace=True)
     match algo:
         case 'psd':
@@ -1929,7 +1928,8 @@ def plt_ts_cycle(tsf, cfg, df, fields):
         cycle = 'infinite'
     else:
         cycle = str(cycle.round(3))
-    fig.update_layout(title=title.format(cycle))
+
+    fig.update_layout(title=f'Period: {cycle}')
     return fig
 
 
@@ -2009,10 +2009,6 @@ def plt_ts_predict(tsf, cfg, df, fields):
     if cfg.get('trend'):
         trend = cfg['trend']
 
-    damped = False
-    if cfg.get('damped'):
-        damped = cfg['damped']
-
     season = None
     if cfg.get('season'):
         season = cfg['season']
@@ -2028,37 +2024,35 @@ def plt_ts_predict(tsf, cfg, df, fields):
             pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
         case 'holt':
             # Holt's linear trend method(有趋势但没有季节性)
-            md = Holt(ts_df, initialization_method='estimated', damped_trend=damped).fit(optimized=True)
+            md = Holt(ts_df, initialization_method='estimated', damped_trend=False if trend is None else True).fit(optimized=True)
             pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
         case 'ets':
             # Holt-Winter's additive/multiplicative/damped method(有趋势也有季节性)
             # Cannot compute initial seasonals using heuristic method with less than two full seasonal cycles in the data.
-            md = ExponentialSmoothing(ts_df, trend=trend, seasonal=season, damped_trend=damped).fit(optimized=True, use_brute=True)
+            md = ExponentialSmoothing(ts_df, trend=trend, seasonal=season, damped_trend=False).fit(optimized=True, use_brute=True)
             pred = md.predict(start=len(ts_df)//2, end=len(ts_df) + future_step)
             # fig.add_trace(go.Scatter(x=md.trend.index, y=md.trend.values + ts_df.mean(), name='Trend', mode='lines'))
             # fig.add_trace(go.Scatter(x=md.season.index, y=md.season.values, name='Season', mode='lines'))
         case 'arima':
             # Autoregressive Integrated Moving average (差分整合移动平均自回归模型)
-            param_m = 1
-            if cfg['period'].startswith('Q'):
-                param_m = 4
-            elif cfg['period'].startswith('M'):
-                param_m = 12
-            elif cfg['period'].startswith('W'):
-                param_m = 52
-            temp_df = ts_df.head(len(ts_df)-7)
             # sktime.ARIMA requires package 'pmdarima'
             # issue happens when import pmdarima
             # reason: numpy version is high
-            # ARIMA for Stationary Time Series. update order(d) if not
-            # order = (p, d, q), p:偏自相关滞后p阶后变为0, d: 差分d次变为平稳序列, q: 自相关滞后q阶后变为0
-            # seasonal_order = (P, D, Q, s)
-            md = ARIMA(temp_df.values, order=(1, 1, 1), seasonal_order=(0, 0, 0, 12))
+            # non-seasonal ARIMA for Stationary Time Series. update order(d) if not
+            # AR是"自回归", I为差分, MA是"移动平均"
+            # ARIMA原理：将非平稳时间序列转化为平稳时间序列然后将因变量仅对它的滞后值以及随机误差项的现值和滞后值进行回归所建立的模型
+            # order = (p, d, q), p:自回归项数,偏自相关滞后p阶后变为0, d: 使之成为平稳序列所做的差分次数（阶数）, q: 滑动平均项数,自相关滞后q阶后变为0
+            # d=0: MA, d=1: ARMA, d=2: ARIMA
+            # seasonal_order = (P, D, Q, s), P:自回归项数, D: 差分阶数, Q:移动平均阶数, s: 季节性周期数
+            # D=0: no season, D=1: 季节性自回归, D=2: 季节性ARMA
+            order_d = 0 if trend is None else 1 if trend == 'add' else 2
+            season_D = 0 if season is None else 1 if season == 'additive' else 2
+            md = ARIMA(ts_df.values, order=(0, order_d, 0), trend=None, seasonal_order=(0, season_D, 0, 12))
             md_ft = md.fit()
             tmp = ts_df.head(len(ts_df) // 2)
-            y_pred = md_ft.predict(start=len(tmp)+1, end=len(ts_df)+future_step, dynamic=True)
-            prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)-len(tmp)) + future_step, freq=period)
+            y_pred = md_ft.predict(start=len(tmp)-1, end=len(ts_df)+future_step, dynamic=True)
+            prange = pd.date_range(tmp.index.max(), periods=len(y_pred), freq=period)
             pred = pd.Series(y_pred.tolist(), index=prange)
         case 'autoarima':
             # 自动差分整合移动平均自回归模型
@@ -2073,8 +2067,6 @@ def plt_ts_predict(tsf, cfg, df, fields):
             prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period)
             pred = md.predict(prange)
         case 'autoets':
-            temp_df = ts_df.head(len(ts_df) - 7)
-            tmp = ts_df.head(len(ts_df) // 2)
             # temp_df.index = temp_df.index.strftime('%Y-%m')
             # autoETS asks Series, not Dataframe.
             # 'M' is available for period, but is deprecated by Datetime
@@ -2083,7 +2075,7 @@ def plt_ts_predict(tsf, cfg, df, fields):
                 period_unit = 'M'
             if period and period == 'min':
                 period_unit = '5min'
-            t_series = pd.Series(temp_df.values.T[0], index=temp_df.index.to_period(period_unit))
+            t_series = pd.Series(ts_df.values.T[0], index=ts_df.index.to_period(period_unit))
             # season period estimation
             sp_est = SeasonalityACF()
             sp_est.fit(t_series)
@@ -2098,26 +2090,20 @@ def plt_ts_predict(tsf, cfg, df, fields):
 
             # autoETS asks Series, not Dataframe
             # prange = pd.date_range(temp_df.index.max(), periods=future_step+7, freq=period)
-            prange = pd.period_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period_unit)
+            tmp = ts_df.head(len(ts_df) // 2)
+            prange = pd.period_range(tmp.index.max(), periods=len(tmp)+future_step, freq=period_unit)
             pred = md.predict(prange)
         case 'prophet':
             # growth: 'linear', 'logistic' or 'flat'
             # seasonality_mode: 'additive' (default) or 'multiplicative'.
-            temp_df = ts_df.head(len(ts_df) - 7)
+            if season is None:
+                season = 'additive'
+            md = Prophet(seasonality_mode=season, add_country_holidays=dict(country_name='US'), growth='linear')
+            md.fit(ts_df)
             tmp = ts_df.head(len(ts_df) // 2)
-            idx_name = temp_df.index.name
-            temp_df.reset_index(inplace=True)
-            temp_df = temp_df.rename(columns={idx_name: "ds", vf: "y"})
-            md = Prophet(seasonality_mode=season)
-            # US, CN,
-            # md.add_country_holidays(country_name='US')
-            md.fit(temp_df)
-            prange = pd.date_range(tmp.index.max(), periods=(len(ts_df)//2)+future_step, freq=period)
-            future = md.make_future_dataframe(periods=future_step+7, freq=period)
-            pred = md.predict(future).tail(future_step+7)
-            pred.set_index('ds', inplace=True)
-            # trend, yhat
-            pred = pred['yhat']
+            prange = pd.date_range(tmp.index.max(), periods=len(tmp)+future_step, freq=period)
+            pred = md.predict(fh=prange)
+            pred = pred[vf]
         case 'natureprophet':
             # neuralprophet 0.9.0 requires numpy<2.0.0,>=1.25.0, but you have numpy 2.0.2 which is incompatible.
             temp_df = ts_df.head(len(ts_df) - 7)
@@ -2132,6 +2118,14 @@ def plt_ts_predict(tsf, cfg, df, fields):
             pred.set_index('ds', inplace=True)
             # trend, yhat
             pred = pred['yhat']
+        case 'tsfm':
+            # TimesFMForecaster requires python version to be <3.11,>=3.10
+            tmp = ts_df.head(len(ts_df) // 2)
+            prange = pd.date_range(tmp.index.max(), periods=len(tmp) + future_step, freq=period)
+            md = TimesFMForecaster(context_len=len(ts_df), horizon_len=future_step)
+            md.fit(ts_df)
+            pred = md.predict(fh=prange)
+            pred = pred[vf]
         case 'deepar':
             dataset = PandasDataset(ts_df, target=vf)
             train_set, test_gen = split(dataset, offset=-36)
@@ -2140,8 +2134,6 @@ def plt_ts_predict(tsf, cfg, df, fields):
             prange = ListDataset([{'start':'1960-01-01', 'target':[400,400,400,400,400,400,400,400,400,400,400,400]}], freq='ME')
             preds = list(md.predict(test_set.input))
             pred = preds[2]
-            # pred.plot()
-            # plt.show()
 
     dt_idx = pred.index
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
