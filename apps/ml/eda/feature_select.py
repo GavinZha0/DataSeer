@@ -1,3 +1,5 @@
+from unittest.mock import inplace
+
 import numpy as np
 import pandas as pd
 # import shap
@@ -17,7 +19,7 @@ from sklearn import preprocessing as pp
 from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
 from sklearn.metrics import roc_auc_score
 import lightgbm as lgb
-
+import tsfresh as tsfresh
 
 """
 get feature score or importance
@@ -33,7 +35,7 @@ mode: percentile(选取排名前x%的特征), k_best(依据相关性,选择k个�
         fdr(基于错误发现率), fwe(多重比较谬误率,基于族系误差)
 the 'percentile' and 'kbest' modes are supporting unsupervised feature selection (when y is None).
 """
-def feature_corr_filter(X: pd.DataFrame, y: pd.DataFrame, config):
+def feature_corr_filter(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
     scores = []
     method = 'f_test'
     if config.get('method'):
@@ -110,7 +112,7 @@ SelectFromModel 是一个 meta-transformer（元转换器） ，它可以用来�
 当threshold为None，如果估计器的参数惩罚设置为l1（Lasso），则使用的threshold默认为1e-5。否则，默认使用mean。
 SHAP: Shapley Additive Explanations, 可解释性，基于边际贡献,通过对特征重要性进行评估，解释模型对每个特征的贡献。
 """
-def feature_model_eval(X: pd.DataFrame, y: pd.DataFrame, config):
+def feature_model_eval(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
     scores = []
     model = 'linear'
     if config.get('model'):
@@ -185,7 +187,7 @@ permutation importance（排列重要性）
 null importance（排列重要性）
 SHAP: Shapley Additive Explanations, 可解释性，基于边际贡献,通过对特征重要性进行评估，解释模型对每个特征的贡献。
 """
-def feature_iter_search(X: pd.DataFrame, y: pd.DataFrame, config):
+def feature_iter_search(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
     scores = []
     method = 'rfe'
     if config.get('method'):
@@ -260,7 +262,8 @@ auto detect/generate/encode features
 dfs: Deep Feature Synthesis (深度特征合成)
 
 """
-def feature_auto_detect(X: pd.DataFrame, y: pd.DataFrame, config):
+def feature_auto_detect(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
+    f_matrix = None
     match config['method']:
         case 'dfs':
             # Deep Feature Synthesis
@@ -269,21 +272,34 @@ def feature_auto_detect(X: pd.DataFrame, y: pd.DataFrame, config):
             f_matrix, f_names = ftool.dfs(entityset=es, target_dataframe_name='f_engg', max_depth=2)
         case 'tsfresh':
             # TSFRESH automatically extracts 100s of features from time series.
-            # TSFresh 自动从时间序列中提取 100 个特征。 这些特征描述了时间序列的基本特征，
-            # 例如峰值数量、平均值或最大值或更复杂的特征，例如时间反转对称统计量。
-            aaa = 666
-            # extracted_features = extract_features(timeseries, column_id="id", column_sort="time")
-        case 'featurewiz':
-            # https://github.com/AutoViML/featurewiz
-            bbb = 666
+            # for timeseries, the y is in X
+            if ts_name:
+                f_matrix = tsfresh.extract_features(X, column_id=ts_name, column_sort=ts_name, show_warnings=False, n_jobs=5)
+                # if y.empty is False:
+                    # selected_features = tsfresh.select_features(f_matrix, y.iloc[:,0].values, show_warnings=False)
+                # convert datetime to string for json serialization
+                f_matrix.index = f_matrix.index.astype('str')
         case 'pycaret':
             # https://github.com/pycaret/pycaret
             # PyCaret 不是一个专用的自动化特征工程库，但它包含自动生成特征的功能。
             ccc = 888
-
-    resp = f_matrix.head(5).T.to_dict(orient='split')
-    resp['method'] = config.get('method')
-    return resp
+    if f_matrix is not None:
+        # drop the columns if all values are na
+        f_matrix.dropna(axis=1, how='all', inplace=True)
+        # precision
+        f_matrix = f_matrix.round(5)
+        # drop the columns if all values are same
+        for col in f_matrix.columns:
+            if f_matrix[col].nunique() == 1:
+                f_matrix.drop(col, axis=1, inplace=True)
+        # drop all duplicate columns
+        f_matrix = f_matrix.T.drop_duplicates().T
+        # only show first 10 rows
+        resp = f_matrix.head(10).to_dict(orient='split')
+        resp['method'] = config.get('method')
+        return resp
+    else:
+        return None
 
 
 ## 获取lightgbm的特征重要度，这里应用的lightgbm的随机森林算法和论文内的算法逻辑保持一致

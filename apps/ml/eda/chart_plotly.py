@@ -319,19 +319,30 @@ def plt_reduction_chart(kind, config, df, fields):
 build chart of feature
 """
 def plt_feature_chart(kind, config, df, fields):
+    # get target field
     t_field = [field['name'] for field in fields if 'target' in field]
-    f_df = df[df.columns.difference(t_field)]
     t_df = df[t_field]
+    # get date field
+    timeseries = False
+    ts_date_field = [field['name'] for field in fields if field['attr'] == 'date' and field.get('timeline')]
+    if len(ts_date_field):
+        # set datetime field as index if it is time series
+        # df.set_index(ts_date_field[0], inplace=True)
+        # feature df includes target field if it is time series
+        f_df = df
+        timeseries = True
+    else:
+        f_df = df[df.columns.difference(t_field)]
 
     match kind:
         case 'corrfilter':
-            data = feature_corr_filter(f_df, t_df, config)
+            data = feature_corr_filter(f_df, t_df, config, None if len(ts_date_field)==0 else ts_date_field[0])
         case 'modeleval':
-            data = feature_model_eval(f_df, t_df, config)
+            data = feature_model_eval(f_df, t_df, config, None if len(ts_date_field)==0 else ts_date_field[0])
         case 'itersearch':
-            data = feature_iter_search(f_df, t_df, config)
+            data = feature_iter_search(f_df, t_df, config, None if len(ts_date_field)==0 else ts_date_field[0])
         case 'autodetect':
-            data = feature_auto_detect(f_df, t_df, config)
+            data = feature_auto_detect(f_df, t_df, config, None if len(ts_date_field)==0 else ts_date_field[0])
         case _:
             # do nothing
             data = None
