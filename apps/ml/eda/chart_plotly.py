@@ -323,14 +323,12 @@ def plt_feature_chart(kind, config, df, fields):
     t_field = [field['name'] for field in fields if 'target' in field]
     t_df = df[t_field]
     # get date field
-    timeseries = False
     ts_date_field = [field['name'] for field in fields if field['attr'] == 'date' and field.get('timeline')]
     if len(ts_date_field):
         # set datetime field as index if it is time series
         # df.set_index(ts_date_field[0], inplace=True)
         # feature df includes target field if it is time series
         f_df = df
-        timeseries = True
     else:
         f_df = df[df.columns.difference(t_field)]
 
@@ -2324,7 +2322,7 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
     # handle missing value
     for field in num_fields:
         vf = field['name']
-        if ts_df[vf].isnull().any() and field.get('miss'):
+        if vf in ts_df.columns and ts_df[vf].isnull().any() and field.get('miss'):
             match field['miss']:
                 case 'mean':
                     ts_df[vf] = ts_df[vf].fillna(ts_df[vf].mean())

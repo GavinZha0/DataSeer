@@ -20,6 +20,7 @@ from .algo.algo_main import train_pipeline, extract_algos, extract_algo_args, ex
 from .dataset.dataset_main import get_data_stat
 from .eda.eda_main import eda_build_chart
 from .experiment.experiment import exper_reg, exper_unreg, exper_publish, exper_unpublish
+from .workflow.flow_main import run_workflow
 
 app = APIRouter()
 
@@ -199,18 +200,22 @@ async def execute_algo(req: schema.AlgoExeParam, auth: Auth = Depends(AllUserAut
 ###########################################################
 #    MlFlow
 ###########################################################
-@app.post("/flow/list", summary="List Ml Flows")
+@app.post("/workflow/list", summary="List Ml Flows")
 async def list_flow(req: param.FlowParams = Depends(), auth: Auth = Depends(AllUserAuth())):
     datas, count = await crud.FlowDal(auth.db).get_datas(**req.dict(), v_count=True, v_ret=RET.DUMP,
                                                          v_where=[model.Flow.org_id == auth.user.oid])
     return SuccessResponse(datas, count=count)
 
 
-@app.post("/flow/get", summary="Get a Ml Flow")
-async def get_flow(data_id: int, auth: Auth = Depends(AllUserAuth())):
-    data = await crud.FlowDal(auth.db).get_data(data_id, v_ret=RET.DUMP, v_where=[model.Flow.org_id == auth.user.oid])
+@app.post("/workflow/execute", summary="Execute Ml Flow")
+async def get_flow(req: schema.FlowExeParam, auth: Auth = Depends(AllUserAuth())):
+    data = await run_workflow(req.id, auth.db, auth.user)
     return SuccessResponse(data)
 
+
+###########################################################
+#    MlFlow
+###########################################################
 
 @app.post("/experiment/reg", summary="Register a model")
 async def reg_experiment(req: schema.AlgoExperReg, auth: Auth = Depends(AllUserAuth())):

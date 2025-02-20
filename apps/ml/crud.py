@@ -43,8 +43,8 @@ class FlowDal(DalBase):
     def __init__(self, db: AsyncSession):
         super(FlowDal, self).__init__()
         self.db = db
-        self.model = model.Flow
-        self.schema = schema.Flow
+        self.model = model.Workflow
+        self.schema = schema.Workflow
 
 
 

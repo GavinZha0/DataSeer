@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from core.data_types import DatetimeStr
 
 
-class Flow(BaseModel):
+class Workflow(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int = Field(..., title="Id")
@@ -42,3 +42,7 @@ class Flow(BaseModel):
             # return execjs.eval(v)
         else:
             return v
+
+
+class FlowExeParam(BaseModel):
+    id: int = Field(..., title="Workflow id")

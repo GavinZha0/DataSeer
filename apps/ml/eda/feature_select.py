@@ -1,5 +1,3 @@
-from unittest.mock import inplace
-
 import numpy as np
 import pandas as pd
 # import shap
@@ -274,6 +272,9 @@ def feature_auto_detect(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
             # TSFRESH automatically extracts 100s of features from time series.
             # for timeseries, the y is in X
             if ts_name:
+                # column_id: used to identify different time series, like the owner of the time series or time series id
+                # column_sort: used to sort the time series (sort by datetime)
+                # column_value: used to extract features from the time series, like kpi value
                 f_matrix = tsfresh.extract_features(X, column_id=ts_name, column_sort=ts_name, show_warnings=False, n_jobs=5)
                 # if y.empty is False:
                     # selected_features = tsfresh.select_features(f_matrix, y.iloc[:,0].values, show_warnings=False)

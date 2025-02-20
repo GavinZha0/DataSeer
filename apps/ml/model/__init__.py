@@ -9,5 +9,5 @@
 from .dataset import Dataset
 from .eda import Eda
 from .algo import Algo
-from .flow import Flow
+from .workflow import Workflow
 

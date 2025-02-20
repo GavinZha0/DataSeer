@@ -14,9 +14,9 @@ from db.db_base import BaseDbModel
 from sqlalchemy import String, Boolean, Integer, ForeignKey, Text, DateTime
 
 
-class Flow(BaseDbModel):
-    __tablename__ = "ml_flow"
-    __table_args__ = ({'comment': 'ML flow'})
+class Workflow(BaseDbModel):
+    __tablename__ = "ml_workflow"
+    __table_args__ = ({'comment': 'ML workflow'})
 
     name: Mapped[str] = mapped_column(String(64), comment="Name")
     desc: Mapped[Optional[str]] = mapped_column(String(128), comment="Description")
@@ -26,8 +26,6 @@ class Flow(BaseDbModel):
     canvas: Mapped[Optional[str]] = mapped_column(Text, comment="Canvas")
     x6_ver: Mapped[Optional[str]] = mapped_column(String(8), comment="X6 version")
     version: Mapped[Optional[str]] = mapped_column(String(8), comment="Version")
-    status: Mapped[Optional[str]] = mapped_column(String(16), comment="Status")
-    error: Mapped[Optional[str]] = mapped_column(Text, comment="Error")
     public: Mapped[bool] = mapped_column(Boolean, default=False, comment="Is public")
 
     # bind to unique org
