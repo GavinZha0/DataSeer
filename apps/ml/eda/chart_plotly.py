@@ -41,6 +41,7 @@ from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, 
 # from neuralprophet import NeuralProphet
 from statsmodels.tsa.arima.model import ARIMA
 from sktime.forecasting.fbprophet import Prophet
+import ruptures as rpt
 
 """
 build chart of statistics
@@ -368,8 +369,10 @@ def plt_ts_chart(kind, config, df, fields):
         return None
 
     if config.get('vf'):
-        df = df[[ts_field, config['vf']]]
-
+        if config.get('cat'):
+            df = df[[ts_field, config['cat'], config['vf']]]
+        else:
+            df = df[[ts_field, config['vf']]]
     # set ts field as index
     df.set_index(ts_field, inplace=True)
     if len(df.columns) == 1:
@@ -411,6 +414,9 @@ def plt_ts_chart(kind, config, df, fields):
         case 'anomaly':
             # anomaly detection
             fig = plt_ts_anomaly(ts_field, config, df, fields)
+        case 'anc':
+            # active noice reduction
+            fig = plt_ts_anc(ts_field, config, df, fields)
         case _:
             fig = None
 
@@ -878,6 +884,7 @@ def plt_stat_outlier(cfg, df, fields):
             fig.add_trace(go.Scatter(x=y_df.index, y=y_df[num_fields[0]], name='outlier', line=dict(color="#ff0000"),
                                      mode='markers', hovertemplate='%{y}<extra></extra>'))
             fig.update_layout(hovermode='x')
+            fig.update_layout(title=f'total outliers: {len(y_df)}', hovermode='x')
         return fig
     else:
         dim = min(dim, len(num_fields))
@@ -1425,28 +1432,36 @@ def plt_ts_overview(tsf, cfg, df, fields):
 
 """
 plt ts trending chart
-{"pid": "ts", "tf": "time", "period": "YE", "agg": "mean", "solo": true, "connected": true}
+{"pid": "ts", "tf": "time", "period": "YE", "vf": "kpi", "agg": "mean", "cat": "country", "solo": true, "connected": true}
 """
 def plt_ts_series(tsf, cfg, df, fields):
     fig = go.Figure()
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
+    v_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                  [field['name'] for field in fields if field['attr'] == 'disc']
+
+    if cfg.get('vf'):
+        v_fields = [cfg['vf']]
 
     # agg: sum, mean, median, min, max, std, count
     agg = 'mean'  # default
     if cfg.get('agg'):
         agg = cfg['agg']
 
-    connected = False
+    connected = True
     if cfg.get('connected'):
         connected = cfg['connected']
 
     agg_cfg = {}
-    for nf in num_fields:
+    for nf in v_fields:
         agg_cfg[nf] = agg
+
+    # category field
+    cat_field = cfg.get('cat')
 
     period = 'D'
     if cfg.get('period'):
+        df, period = ts_resample(tsf, cfg, df, fields)
+        '''
         period = cfg['period']
         # aggregated by period (YS,QS,MS,W,D,h,min,s)
         ts_df = df.resample(cfg['period']).agg(agg_cfg)
@@ -1457,24 +1472,37 @@ def plt_ts_series(tsf, cfg, df, fields):
             # convert to period for getting quarters
             ts_df.index = ts_df.index.to_period('Q')
             ts_df.index = ts_df.index.strftime('%Y-Q%q')
+        '''
     else:
         # without aggregation
         ts_df = df.groupby(tsf).agg(agg_cfg)
 
     if cfg.get('solo'):
         # put curves on separated charts
-        rows = len(num_fields)
-        fig = make_subplots(rows=rows, cols=1, subplot_titles=num_fields, row_heights=[300 for n in range(rows)],
+        rows = len(v_fields)
+        fig = make_subplots(rows=rows, cols=1, subplot_titles=v_fields, row_heights=[300 for n in range(rows)],
                             horizontal_spacing=0.05, vertical_spacing=0.2 / rows)
         [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name='', connectgaps=connected,
-                                  hovertemplate='%{y}<extra></extra>'), i + 1, 1) for i, nf in enumerate(num_fields)]
+                                  hovertemplate='%{y}<extra></extra>'), i + 1, 1) for i, nf in enumerate(v_fields)]
         fig.update_xaxes(matches='x')
         fig.update_layout(showlegend=False, height=rows * 300, hovermode='x')
     else:
-        # put all curves on one chart
-        [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name=nf, connectgaps=connected,
-                                  hovertemplate='%{y}<extra></extra>')) for nf in num_fields]
-        fig.update_layout(hovermode='x')
+        if cat_field:
+            if df[cat_field].nunique() > 50:
+                page = cfg['page'] if cfg.get('page') else 0
+                cat_values = df[cat_field].unique()
+                cat_values.sort()
+                cat_50 = cat_values[page*50:(page+1)*50]
+                df = df[df[cat_field].isin(cat_50)]
+            df.reset_index(inplace=True)
+            # df.sort_values(by=[tsf, cat_field], inplace=True)
+            fig = px.line(df, x=tsf, y=v_fields[0], color=cat_field)
+            # fig.update_layout(legend_traceorder="normal")
+        else:
+            # put all curves on one chart
+            [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name=nf, connectgaps=connected,
+                                      hovertemplate='%{y}<extra></extra>')) for nf in v_fields]
+            fig.update_layout(hovermode='x')
 
     return fig
 
@@ -1927,18 +1955,32 @@ def plt_ts_cycle(tsf, cfg, df, fields):
             # Periodogram(周期图), PSD(Power spectral density, 功率谱密度)
             # 傅里叶变换和频谱分析
             freq, power = periodogram(ts_df[vfield])
-            cycle = 1 / freq[np.argmax(power)]
-            # fig = px.scatter(ts_df, x=tsf, y=field)
-            fig = px.line(x=freq, y=power, labels={'x': 'Freq', 'y': 'Power'})
+            freq = np.round(freq, 4)
+            power = np.round(power, 4)
+
+            psd_df = pd.DataFrame({'freq': freq, 'power': power})
+            psd_df = psd_df.sort_values(by='power', ascending=False)
+            # get top 5 by power
+            top_power = psd_df.head(5)
+            top_power = top_power[top_power['power'] > 0]
+            # get cycles
+            top_power['cycle'] = np.round(1 / top_power['freq'], 1)
+
+            # sort by index
+            psd_df.sort_index(inplace=True)
+            top_power.sort_index(inplace=True)
+            # fig = px.line(x=freq, y=power, labels={'x': 'Freq', 'y': 'Power'})
+            fig.add_trace(
+                go.Scatter(x=psd_df['freq'], y=psd_df['power'], name='PSD', showlegend=False, hovertemplate='%{y}<extra></extra>'))
+            fig.add_trace(
+                go.Scatter(x=top_power['freq'], y=top_power['power'], text=top_power['cycle'], name='Cycle',
+                           mode='markers+text', textposition='top right', hovertemplate='%{text}<extra></extra>'))
+            fig.update_xaxes(title='Freq')
+            fig.update_yaxes(title='Power')
+            fig.update_layout(hovermode='x')
         case '_':
             return fig
 
-    if np.isinf(cycle):
-        cycle = 'infinite'
-    else:
-        cycle = str(cycle.round(3))
-
-    fig.update_layout(title=f'Period: {cycle}')
     return fig
 
 
@@ -2207,10 +2249,12 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             stat = df[vf].describe()
             # Inter Quantile Range
             iqr = stat.loc['75%'] - stat.loc['25%']
-            th_l = stat.loc['25%'] - iqr * iqr_coff
-            th_u = stat.loc['75%'] + iqr * iqr_coff
+            th_lower = stat.loc['25%'] - iqr * iqr_coff
+            th_upper = stat.loc['75%'] + iqr * iqr_coff
             # 0: normal, 1: outlier
-            y_pred = [1 if v<th_l or v>th_u else 0 for v in df[vf].values]
+            y_pred = [-1 if v<th_lower else 1 if v>th_upper else 0 for v in df[vf].values]
+            th_lower = [th_lower] * len(y_pred)
+            th_upper = [th_upper] * len(y_pred)
         case 'zscore':
             # distribution-based
             sigma_coff = threshold if threshold else 3
@@ -2218,9 +2262,40 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             # get statistics info
             stat = df[vf].describe()
             # 3 sigma line
-            th_l = (stat.loc['mean'] - stat.loc['std'] * sigma_coff).round(3)
-            th_u = (stat.loc['mean'] + stat.loc['std'] * sigma_coff).round(3)
-            y_pred = [1 if v<th_l or v>th_u else 0 for v in df[vf].values]
+            th_lower = (stat.loc['mean'] - stat.loc['std'] * sigma_coff).round(3)
+            th_upper = (stat.loc['mean'] + stat.loc['std'] * sigma_coff).round(3)
+            y_pred = [-1 if v<th_lower else 1 if v>th_upper else 0 for v in df[vf].values]
+            th_lower = [th_lower] * len(y_pred)
+            th_upper = [th_upper] * len(y_pred)
+        case 'diff':
+            diff_coff = threshold if threshold else 2
+            diff_df = df[vf].diff(periods=1)
+            diff_df.fillna(0)
+            diff_std = df[vf].std()
+
+            # 2 std line
+            th_lower = (df[vf] - diff_std * diff_coff).round(3)
+            th_upper = (df[vf] + diff_std * diff_coff).round(3)
+
+            out1 = [1 if v > diff_std * diff_coff else 0 for v in diff_df.values]
+            out2 = [-1 if v < 0-(diff_std * diff_coff) else 0 for v in diff_df.values]
+            y_pred = [out1[i] + out2[i] for i in range(len(out1))]
+        case 'rolling':
+            # Rolling Standard Deviation
+            std_coff = threshold if threshold else 2
+
+            # get statistics info
+            ts_rolling = df[vf].rolling(window=3, center=True).mean()
+            ts_rolling = ts_rolling.ffill().bfill()
+            rolling_std = ts_rolling.std()
+
+            # 2 std line
+            th_lower = (ts_rolling - rolling_std * std_coff).round(3)
+            th_upper = (ts_rolling + rolling_std * std_coff).round(3)
+
+            out1 = [1 if v >0 else 0 for v in (df[vf] - th_upper).values]
+            out2 = [-1 if v < 0 else 0 for v in (df[vf] - th_lower).values]
+            y_pred = [out1[i]+out2[i] for i in range(len(out1))]
         case 'dbscan':
             # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
             #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
@@ -2246,7 +2321,8 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             y_pred = clf.labels_
         case 'dif':
             # Deep Isolation Forest
-            clf = dif.DIF(batch_size=64)
+            cont_ratio = threshold if threshold else 0.05
+            clf = dif.DIF(batch_size=32, contamination=cont_ratio, n_estimators=10)
             clf.fit(df[[vf]])
             y_pred = clf.labels_
         case 'ecod':
@@ -2264,76 +2340,265 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             clf = ae1svm.AE1SVM(contamination=cont_ratio)
             clf.fit(df[[vf]])
             y_pred = clf.labels_
+        case 'ruptures':
+            # segment detection
+            penalty = threshold if threshold else 5
+            # model: l1, l2, rbf
+            algo = rpt.Pelt(model="rbf").fit(df[vf].values)
+            bounds = algo.predict(pen=penalty)
+            # algo = rpt.Dynp(model="l2").fit(df[vf].values)
+            # bounds = algo.predict(n_bkps=penalty)
+            v_min = math.floor(df[vf].min())
+            v_max = math.ceil(df[vf].max())
+            y_pred = []
         case '_':
             return fig
 
-
-    # show univariate time series
-    outlier_df = pd.DataFrame(df[vf] * y_pred)
-    outlier_df = outlier_df[outlier_df[vf] > 0]
-
     # two subplots
-    fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], vertical_spacing=0.1)
+    fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], vertical_spacing=0.07)
     # original data line
     fig.add_trace(go.Scatter(x=df.index, y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
+
     # outlier markers
-    fig.add_trace(go.Scatter(x=outlier_df.index, y=outlier_df[vf], name='outlier', line=dict(color="#ff0000"),
-                             mode='markers', hovertemplate='%{y}<extra></extra>'), 1, 1)
+    if len(y_pred) > 0:
+        abs_y = [abs(x) for x in y_pred]
+        outlier_df = pd.DataFrame(df[vf] * abs_y)
+        outlier_df = outlier_df[outlier_df[vf] > 0]
+        fig.add_trace(go.Scatter(x=outlier_df.index, y=outlier_df[vf], name='outlier', line=dict(color="#ff0000"),
+                                 mode='markers', hovertemplate='%{y}<extra></extra>'), 1, 1)
 
-    if method == 'quantile' or method == 'zscore':
-        # add threshold
-        fig.add_shape(editable=False, type="line", x0=df.index.min(), x1=df.index.max(), y0=th_l, y1=th_l,
-                      line=dict(dash="dot"), row=1, col=1)
-        fig.add_shape(editable=False, type="line", x0=df.index.min(), x1=df.index.max(), y0=th_u, y1=th_u,
-                      line=dict(dash="dot"), row=1, col=1)
+        # outliers with binary index (0, 1 or -1)
+        fig.add_trace(go.Scatter(x=df.index, y=y_pred, name='binary index', hovertemplate='%{y}<extra></extra>'), 2, 1)
+        fig.update_layout(title=f'total outliers: {len(outlier_df)}', hovermode='x')
 
-    # outliers with binary index (0 or 1)
-    fig.add_trace(go.Scatter(x=df.index, y=y_pred, name='binary index', hovertemplate='%{y}<extra></extra>'), 2, 1)
+    if method in ['quantile', 'zscore', 'diff', 'rolling']:
+        # add tolerance area
+        fig.add_trace(go.Scatter(x=df.index, y=th_lower, name='lower', showlegend=False,
+                                 line=dict(color='rgba(255,228,181,0.2)', width=0, dash='dot')), 1, 1)
+        fig.add_trace(go.Scatter(x=df.index, y=th_upper, name='upper', showlegend=False, fill='tonexty',
+                                 line=dict(color='rgba(255,228,181,0.2)', width=0, dash='dot')), 1, 1)
+
+    if method == 'ruptures':
+        if len(bounds) > 1:
+            df['tmp_idx'] = range(len(df))
+            for b in bounds:
+                # bounds has the last index of df always
+                # ex: bounds==[len(df)] when df has only ONE segment
+                if b != bounds[-1]:
+                    fig.add_shape(type="line", x0=df[df['tmp_idx']==b].index[0], y0=v_min, x1=df[df['tmp_idx']==b].index[0],
+                              y1=v_max, line=dict(color="gray", dash="dot"), row=1, col=1)
+            fig.update_layout(title=f'total segments: {len(bounds)}', hovermode='x')
+            reshaped_df = ts_segment_reshaping(tsf, cfg, df, bounds)
+            if reshaped_df is not None:
+                fig.add_trace(
+                    go.Scatter(x=reshaped_df.index, y=reshaped_df[vf], name='Reshape', hovertemplate='%{y}<extra></extra>'), 2, 1)
+    return fig
+
+
+"""
+plt ts active noice reduction chart
+{"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
+"""
+def plt_ts_anc(tsf, cfg, df, fields):
+    fig = go.Figure()
+    if cfg.get('vf') is None:
+        return fig
+
+    method = 'quantile'
+    if cfg.get('method'):
+        method = cfg['method']
+
+    metric = 'euclidean'
+    if cfg.get('metric'):
+        metric = cfg['metric']
+
+    # contamination: 默认为0.05，即5%的异常值
+    # irq_coff: 默认为1.6，即1.6倍IQR
+    # sigma_coff: 默认为3，即3倍标准差
+    # use same parameter name for all methods
+    threshold = None
+    if cfg.get('threshold'):
+        threshold = cfg['threshold']
+
+    vf = cfg['vf']
+    df, period = ts_resample(tsf, cfg, df, fields)
+    y_pred = None
+    match method:
+        case 'fft':
+            # default value is 1k Hz
+            cutoff_freq = threshold*1000 if threshold else 1000
+            # fft
+            fft_vals = np.fft.rfft(df[vf].values)
+
+            # get the frequencies
+            fft_freqs = np.fft.rfftfreq(len(df[vf]), 1/1000)
+            # apply the filter mask to the FFT values
+            fft_clean = fft_vals * (fft_freqs <= cutoff_freq)
+            # reverse the FFT to get the filtered signal
+            df['anc'] = np.fft.irfft(fft_clean, n=len(df[vf]))
+
+            fft_amps = np.abs(fft_vals) / len(df[vf])
+            fft_amps = np.round(fft_amps, 4)
+            fft_freqs = np.round(fft_freqs/1000, 4)
+
+            # PSD(Power spectral density, 功率谱密度)
+            psd_freq, psd_power = periodogram(df[vf])
+            psd_freq = np.round(psd_freq, 4)
+            psd_power = np.round(psd_power, 4)
+
+            psd_df = pd.DataFrame({'freq': psd_freq, 'power': psd_power})
+            psd_df = psd_df.sort_values(by='power', ascending=False)
+            # get top 5 by power
+            top_power = psd_df.head(5)
+            top_power = top_power[top_power['power'] > 0]
+
+            # sort by index
+            psd_df.sort_index(inplace=True)
+            top_power.sort_index(inplace=True)
+        case '_':
+            return fig
+
+    # two subplots
+    fig = make_subplots(rows=2, cols=1, row_heights=[500, 300], vertical_spacing=0.05)
+    # original data line
+    fig.add_trace(go.Scatter(x=df.index, y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
+    # denoised data line
+    fig.add_trace(go.Scatter(x=df.index, y=df['anc'], name='Denoised', hovertemplate='%{y}<extra></extra>'), 1, 1)
+    # fft line
+    # fig.add_trace(go.Scatter(x=fft_freqs, y=fft_amps, name='FFT', hovertemplate='%{y}<extra></extra>'), 3, 1)
+    # psd line
+    fig.add_trace(go.Scatter(x=psd_df['freq'], y=psd_df['power'], name='PSD', hovertemplate='%{y}<extra></extra>'), 2, 1)
+    # top 5 freq markers
+    fig.add_trace(go.Scatter(x=top_power['freq'], y=top_power['power'], text=top_power['freq'], name='Freq',
+                             textposition='top right', showlegend=False, mode='markers+text', hovertemplate='%{y}<extra></extra>'), 2, 1)
+    fig.update_xaxes(row=2, col=1, title='Freq')
     fig.update_layout(hovermode='x')
     return fig
 
 
+
 def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
-    ts_df = df
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'
-    if cfg.get('agg'):
-        agg = cfg['agg']
+    period = cfg.get('period', None)
+    if period is None:
+        return df, period
 
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    period = cfg.get('period', None)
-    if period is not None:
-        for field in fields:
-            if field.get('name') == tsf and field.get('gap'):
-                period_min = int(field.get('gap'))
-                if period_min < 60 and (period == 'min' or period == 's'):
-                    # update period to min period of this time series
-                    period = f'{period_min}min'
-                    break
-                elif period_min > 60 and period_min < 1440 and (period == 'h' or period == 'min' or period == 's'):
-                    # update period to min period of this time series
-                    period_h = math.ceil(period_min / 60)
-                    period = f'{period_h}H'
-                    break
-        ts_df = df.resample(period).agg(agg)
+    # agg: sum, mean, median, min, max, std, count
+    agg = cfg['agg'] if cfg.get('agg') else 'mean'
+    for field in fields:
+        # find config of ts field to confirm period
+        if field.get('name') == tsf and field.get('gap'):
+            period_min = int(field.get('gap'))
+            if period_min < 60 and (period == 'min' or period == 's'):
+                # update period to min period of this time series
+                period = f'{period_min}T'
+                break
+            elif period_min > 60 and period_min < 1440 and (period == 'h' or period == 'min' or period == 's'):
+                # update period to min period of this time series
+                period_h = math.ceil(period_min / 60)
+                period = f'{period_h}H'
+                break
+
+    resampled_df = None
+    if cfg.get('cat'):
+        cat_field = cfg['cat']
+        # get page info
+        page = cfg['page'] if cfg.get('page') else 0
+        # unique categories
+        cat_values = df[cat_field].unique()
+        # sort categories
+        cat_values.sort()
+        # get current page. 50 categories
+        cat_50 = cat_values[page * 50:(page + 1) * 50]
+        # filter data by cat
+        cat50_df = df[df[cat_field].isin(cat_50)]
+
+        # resample each category
+        for cat in cat_50:
+            # filter data by cat
+            cat_df = cat50_df[cat50_df[cat_field] == cat]
+            # drop cat field
+            cat_df.drop(columns=[cat_field], inplace=True)
+            # resample
+            cat_df = cat_df.resample(period).agg(agg)
+            # get cat field back
+            cat_df[cat_field] = cat
+            if resampled_df is None:
+                resampled_df = cat_df
+            else:
+                resampled_df = pd.concat([resampled_df, cat_df])
+    else:
+        resampled_df = df.resample(period).agg(agg)
 
     # value field
     num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
     # handle missing value
     for field in num_fields:
         vf = field['name']
-        if vf in ts_df.columns and ts_df[vf].isnull().any() and field.get('miss'):
+        if vf in resampled_df.columns and resampled_df[vf].isnull().any() and field.get('miss'):
             match field['miss']:
                 case 'mean':
-                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].mean())
+                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mean())
                 case 'median':
-                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].median())
+                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].median())
                 case 'mode':
-                    ts_df[vf] = ts_df[vf].fillna(ts_df[vf].mode())
+                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mode())
                 case 'prev':
-                    ts_df[vf] = ts_df[vf].ffill()
+                    resampled_df[vf] = resampled_df[vf].ffill()
                 case 'next':
-                    ts_df[vf] = ts_df[vf].bfill()
+                    resampled_df[vf] = resampled_df[vf].bfill()
                 case 'zero':
-                    ts_df[vf] = ts_df[vf].fillna(value=0)
-    return ts_df, period
+                    resampled_df[vf] = resampled_df[vf].fillna(value=0)
+    return resampled_df, period
+
+"""
+plt ts anomaly detection chart
+{"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
+"""
+def ts_segment_reshaping(tsf: str, cfg: dict, df: pd.DataFrame, segments: list):
+    vf = cfg.get('vf')
+    reshaped_df = None
+    # segments always has a value at least
+    for idx, seg in enumerate(segments):
+        stone = None
+        if idx == 0:
+            seg_df = df.head(seg)
+            # drop 2 boundary points for mean and std
+            stone = seg_df.tail(2)
+            seg_df.drop(stone.index, inplace=True)
+        elif idx == len(segments) - 1:
+            seg_df = df[segments[idx-1]:seg]
+            # drop 2 boundary points for mean and std
+            stone = seg_df.head(2)
+            seg_df.drop(stone.index, inplace=True)
+        else:
+            seg_df = df[segments[idx - 1]:seg]
+            # drop 4 boundary points for mean and std
+            stone = seg_df.head(2)
+            stone = pd.concat([stone, seg_df.tail(2)])
+            seg_df.drop(stone.index, inplace=True)
+
+
+        if len(seg_df) > 2 and seg_df[vf].std() < 0.6:
+            # it is outlier if it is out of 2 sigma
+            th_lower = seg_df[vf].mean() - seg_df[vf].std() * 3
+            th_upper = seg_df[vf].mean() + seg_df[vf].std() * 3
+            # filter out outliers
+            outliers = seg_df[(seg_df[vf]>th_upper) | (seg_df[vf]<th_lower)]
+            # drop outliers from seg_df
+            seg_df.drop(outliers.index, inplace=True)
+            # replace segment with current mean which exclude outlier
+            seg_df[vf] = seg_df[vf].mean()
+            # concat outliers to seg_df
+            seg_df = pd.concat([seg_df, outliers])
+
+        # get boundary points back
+        seg_df = pd.concat([seg_df, stone])
+        # sort date index
+        seg_df.sort_index(inplace=True)
+        if reshaped_df is None:
+            reshaped_df = seg_df
+        else:
+            reshaped_df = pd.concat([reshaped_df, seg_df])
+
+    return reshaped_df

@@ -5,6 +5,8 @@
 # @desc           : load data from DB or S3
 
 import base64
+import re
+
 import boto3
 import mysql.connector as ct
 import pandas as pd
@@ -21,6 +23,7 @@ from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
 from pandas import CategoricalDtype
 from sqlalchemy import text
+import polars as pl
 
 # This is very similar with ray_pipeline.py
 # It runs locally for synchronized response(await) and performance is higher than ray_pipeline.py
@@ -192,8 +195,8 @@ class DataLoader:
     async def load_from_ftp(self, content: str)->pd.DataFrame:
         # find files from content and get file list
         # ex: SELECT * FROM 'mldata/iris.csv'
-        file_list = [f.strip("'") for f in content.split(' ') if
-                     f.upper().endswith((".CSV'", ".JSON'", ".PARQUET'", ".TXT'"))]
+        file_list = re.findall(r"'(.*?)'", content)
+        file_list = [f.strip() for f in file_list if f.strip().upper().endswith((".CSV", ".JSON", ".PARQUET", ".TXT"))]
         # get unique files
         file_list = list(set(file_list))
         duck_sql = content
@@ -204,19 +207,19 @@ class DataLoader:
             if f_name.upper().endswith(('.CSV')):
                 match idx:
                     case 0:
-                        df0 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+                        df0 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
                     case 1:
-                        df1 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+                        df1 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
                     case 2:
-                        df2 = pd.read_csv(obj, na_values=['(null)', 'NA', 'N/A'])
+                        df2 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
             elif f_name.upper().endswith(('.JSON')):
                 match idx:
                     case 0:
-                        df0 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df0 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
                     case 1:
-                        df1 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df1 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
                     case 2:
-                        df2 = pd.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df2 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
             duck_sql = duck_sql.replace(f_name, f'df{idx}')
         return duckdb.sql(duck_sql).df()
 
@@ -293,17 +296,16 @@ class DataLoader:
             if it['name'] not in df.columns:
                 # df doesn't have this field
                 continue
-
             if it.get('attr') == 'date':
                 # format datetime
                 df[it['name']] = pd.to_datetime(df[it['name']])
                 continue
-            if it.get('attr') == 'cat':
+            if it.get('attr') == 'cat' and df[it['name']].dtypes.name=='object':
                 # convert type to category
                 if it.get('values'):
                     cat_type = CategoricalDtype(categories=it.get('values'))
                 else:
-                    u_values = df[it['name']].value_counts().index.to_list()
+                    u_values:int = df[it['name']].value_counts().index.to_list()
                     it['values'] = u_values
                     cat_type = CategoricalDtype(categories=u_values)
                 df[it['name']] = df[it['name']].astype(cat_type)
@@ -348,6 +350,24 @@ class DataLoader:
                     case '_':
                         # assigned value
                         df[field_name] = df[field_name].fillna(it['miss'])
+
+        # timeseries resample
+        resample_fields = [it for it in fields if it.get('timeline') and it.get('resample')]
+        if resample_fields and len(resample_fields) > 0:
+            field_name = resample_fields[0]['name']
+            # unit of resample is minutes
+            freq = resample_fields[0]['resample']
+            if freq%1440 == 0:
+                freq = f'{freq//1440}D'
+            elif freq%60 == 0:
+                freq = f'{freq//60}T'
+            else:
+                freq = f'{freq}min'
+            # resample timeseries and fill missing values
+            # date field is set to index
+            df = df.resample(freq, on=field_name).mean().ffill()
+            # reset index
+            df = df.reset_index()
 
         # encoding
         encode_fields = [it for it in fields if it.get('encode')]
