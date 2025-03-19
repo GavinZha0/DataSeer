@@ -3,8 +3,7 @@
 # @Create Time    : 2021/10/19
 # @File           : main.py
 # @desc           : main
-
-import ray
+import sys
 from fastapi import FastAPI
 import uvicorn
 from starlette.middleware.cors import CORSMiddleware
@@ -77,8 +76,10 @@ def run(
         RedisListener()
 
     if RAY_ENABLE:
+        import ray
         # init ray to connect to cluster when cluster mode
         # give a temp folder for ray using
+        print('initialize RAY.......')
         ray.init(ignore_reinit_error=True, local_mode=RAY_LOCAL_MODE,
                  num_cpus=RAY_NUM_CPU, num_gpus=RAY_NUM_GPU, _temp_dir=TEMP_DIR+'/ray/')
         # ray.autoscaler.sdk.request_resources(bundles=[{"GPU": 1}] * 1)
@@ -93,7 +94,6 @@ def run(
 @shell_app.command()
 def init():
     print("initialize...")
-
 
 if __name__ == '__main__':
     shell_app()

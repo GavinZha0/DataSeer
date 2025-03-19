@@ -3,15 +3,12 @@ import base64
 import dateparser
 import numpy as np
 import pandas as pd
-import sklearn
-import torch
-import torchvision
-import torchaudio
 from config.settings import TEMP_DIR
-from core.logger import error
-
 
 async def buildin_dataset_load(func: str, limit: int, params: []):
+    import sklearn
+    import torchaudio
+    import torchvision
     if func.startswith('sklearn'):
         dataset = eval(func)()
         df = pd.DataFrame(dataset.data, columns=dataset.feature_names)
@@ -78,8 +75,6 @@ async def get_data_stat(type: str, df: any, limit: int = None):
 
             # get stat info
             desc = df.describe(include='all')
-            # convert datetime(like Timestamp('2024-11-15 06:00:00')) to string for dict to json
-            # otherwise, it will fail (TypeError: Type is not JSON serializable: Timestamp)
             # date_types = ['datetime' if it.name.startswith('datetime') else it.name for it in df.dtypes]
             ts_col = df.select_dtypes(include='datetime').columns.tolist()
             if ts_col is not None:
@@ -88,7 +83,12 @@ async def get_data_stat(type: str, df: any, limit: int = None):
                     min_diff = int(df[col].diff().min().round('min').seconds/60)
                     desc.loc['gap', col] = min_diff if min_diff > 0 else 1
 
+                    # convert datetime(like Timestamp('2024-11-15 06:00:00')) to string for dict to json
+                    # otherwise, it will fail (TypeError: Type is not JSON serializable: Timestamp)
+                    # Convert timestamps to ISO format strings
+                    # df['timestamp'] = df['timestamp'].apply(lambda x: x.isoformat())
                     df[col] = df[col].astype('str')
+
                     desc[col] = desc[col].replace(np.nan, '')
                     desc[col] = desc[col].astype('str')
 

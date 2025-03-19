@@ -5,15 +5,10 @@
 # @desc           : ray data loader
 
 import base64
-import boto3
 import mysql.connector as ct
 import pandas as pd
 import duckdb
-import io
-
 import s3fs
-from sqlalchemy import create_engine
-
 from config import settings
 from config.settings import TEMP_DIR
 import torch
@@ -23,7 +18,7 @@ import ray
 from pandas import CategoricalDtype
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
-from sklearn.model_selection import train_test_split
+
 
 # This is very similar with data_loader.py
 # It runs remotely on ray for async response and data load performance is lower than data_loader.py

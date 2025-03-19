@@ -4,7 +4,7 @@
 # @Create Time    : 2024/02/12
 # @File           : views.py
 # @desc           : ML API
-import ray
+
 from sqlalchemy import select
 from fastapi import Depends, APIRouter
 from apps.auth.auth import AllUserAuth

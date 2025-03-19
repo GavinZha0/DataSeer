@@ -8,7 +8,6 @@ import ray
 import mlflow
 import torch
 import torchmetrics
-import torchvision
 from sqlalchemy.ext.asyncio import AsyncSession
 from torch import nn
 
@@ -122,6 +121,7 @@ extract existing dataset
 sklearn and pytorch
 """
 async def extract_ml_datasets():
+    import torchvision
     all_set = []
     sklearn_set = dict(id=-1, name='sklearn', children=[])
     sklearn_set['children'] = [{"id": -100-k, "name": v} for k, v in enumerate(skds.__all__) if v.startswith('load') or v.startswith('fetch')]
@@ -332,6 +332,7 @@ async def extract_algo_args(category: str, algo: str):
                     dict(name='output_size', default=1)]
             return dict(algo=algo, args=arguments[algorithm], doc=algo_doc)
         else:
+            import torchvision
             # can be ignored arguments
             ignored = ['kwargs']
             algo_func = torchvision.models.get_model_builder(algorithm)

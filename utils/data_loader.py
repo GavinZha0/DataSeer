@@ -6,24 +6,19 @@
 
 import base64
 import re
-
 import boto3
 import mysql.connector as ct
 import pandas as pd
 import duckdb
 import io
-import ray
 from sqlalchemy.ext.asyncio import create_async_engine
 from config.settings import TEMP_DIR, FTP_SERVER_PATH
 from core.logger import logger
-import torch
-import torchvision
-import torchaudio
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
 from pandas import CategoricalDtype
 from sqlalchemy import text
-import polars as pl
+from polars import read_csv, read_json
 
 # This is very similar with ray_pipeline.py
 # It runs locally for synchronized response(await) and performance is higher than ray_pipeline.py
@@ -104,6 +99,7 @@ class DataLoader:
         return df
 
     async def load_from_db_2(self, content: str, params: []) -> pd.DataFrame:
+        import ray
         # serialization issue is resolved by this way
         def create_conn(usr: str, psw: str, host: str, db: str):
             def conn():
@@ -147,6 +143,7 @@ class DataLoader:
 
 
     async def load_from_bucket_2(self, content: str)->pd.DataFrame:
+        import ray
         # find files from content and get file list
         # ex: SELECT * FROM 'mldata/iris.csv'
         file_list = [f.strip("'") for f in content.split(' ') if
@@ -207,23 +204,25 @@ class DataLoader:
             if f_name.upper().endswith(('.CSV')):
                 match idx:
                     case 0:
-                        df0 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
+                        df0 = read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
                     case 1:
-                        df1 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
+                        df1 = read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
                     case 2:
-                        df2 = pl.read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
+                        df2 = read_csv(obj, null_values=['(null)', 'NA', 'N/A'])
             elif f_name.upper().endswith(('.JSON')):
                 match idx:
                     case 0:
-                        df0 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df0 = read_json(io.StringIO(obj.read().decode('utf-8')))
                     case 1:
-                        df1 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df1 = read_json(io.StringIO(obj.read().decode('utf-8')))
                     case 2:
-                        df2 = pl.read_json(io.StringIO(obj.read().decode('utf-8')))
+                        df2 = read_json(io.StringIO(obj.read().decode('utf-8')))
             duck_sql = duck_sql.replace(f_name, f'df{idx}')
         return duckdb.sql(duck_sql).df()
 
     async def load_from_buildin(self, content: str):
+        import torchvision
+        import torchaudio
         if content.startswith('sklearn'):
             import sklearn
             from sklearn import datasets
@@ -431,6 +430,7 @@ class DataLoader:
     """
 
     async def transform_bk(self, df: pd.DataFrame, fields: any):
+        import torch
         for it in fields:
             if it.get('omit'):
                 # delete omit fields

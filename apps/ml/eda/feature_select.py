@@ -173,6 +173,8 @@ def feature_model_eval(X: pd.DataFrame, y: pd.DataFrame, config, ts_name: str):
     # prime: Ture or False
     f_score = pd.DataFrame({'name': X.columns.to_list(), 'prime': prime, 'value': scores.round(3)})
     f_score.sort_values(by='value', ascending=False, inplace=True)
+    # round() doesn't work. why???
+    f_score = f_score.round({'value': 3})
     resp = f_score.to_dict(orient='list')
     resp['method'] = config.get('method')
     return resp

@@ -13,29 +13,21 @@ import pandas as pd
 import ray
 import ray.tune.search as search
 import ray.tune.schedulers as schedule
-import torch
 from ray.tune.stopper import TrialPlateauStopper
 from torchvision.transforms import v2 as ttv2
-import torchaudio
-import torchvision
 from pandas import CategoricalDtype
 from ray import tune, train
 from ray.exceptions import RayError
 from ray.tune.experimental.output import get_air_verbosity, AirVerbosity
-import sklearn
-from sklearn import datasets
 from sklearn.model_selection import train_test_split
 from sklearn import preprocessing as pp
 from sklearn import feature_extraction as fe
-import xgboost as xgb
 import mysql.connector as ct
 from config import settings
 from config.settings import TEMP_DIR, RAY_NUM_GPU
 from utils.ray.ray_reporter import RayReport, JOB_PROGRESS_START, JOB_PROGRESS_END
 from ray.air import ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
-from ray.train.xgboost import XGBoostTrainer
-from ray.train.lightgbm import LightGBMTrainer
 import s3fs
 import duckdb
 
@@ -186,17 +178,19 @@ class RayPipeline:
 
 
     def load_from_buildin(self, content: str) -> ray.data.Dataset:
+        import sklearn
+        from sklearn import datasets
+        import torchaudio
+        from torchaudio import datasets
+        import torchvision
+        from torchvision import datasets
         if content.startswith('sklearn'):
-            import sklearn
-            from sklearn import datasets
             dataset = eval(content)()
             df = pd.DataFrame(dataset.data, columns=dataset.feature_names)
             if 'target' in dataset.keys():
                 df['target'] = dataset.target
             return ray.data.from_pandas(df)
         elif content.startswith('torchvision'):
-            import torchvision
-            from torchvision import datasets
             dataset_func = eval(content)
             transforms = self.get_img_transforms(self.dataset_info.transform)
             # it will be downloaded if it doesn't exist in local folder
@@ -207,8 +201,6 @@ class RayPipeline:
             # ArrowConversionError: Error converting data to Arrow: [(tensor([[[
             return ray.data.from_torch(data)
         elif content.startswith('torchaudio'):
-            import torchaudio
-            from torchaudio import datasets
             dataset_func = eval(content)
             # it will be downloaded if it doesn't exist in local folder
             data = dataset_func(TEMP_DIR + '/data/', download=True)
@@ -393,6 +385,7 @@ class RayPipeline:
         # image transform fist then tensor transform
         # between them there should be a v2.ToTensor()
         # to do. -- Gavin
+        import torch
 
         if self.transformed:
             dataset = ds
@@ -475,6 +468,7 @@ class RayPipeline:
 
     # get image transforms based on config
     def get_img_transforms(self, transform: list):
+        import torch
         pipe = [ttv2.PILToTensor(), ttv2.ToDtype(torch.float32, scale=True)]
         for it in transform:
             match it['operation']:
@@ -844,6 +838,7 @@ class RayPipeline:
 
     # train ML algo based on ray and mlflow
     def trainXGBoost(self, params: dict, train_func, dataset: any):
+        from ray.train.xgboost import XGBoostTrainer
         # use AWS S3/minio as artifact repository
         os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
         os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')
@@ -945,6 +940,7 @@ class RayPipeline:
 
     # train ML algo based on ray and mlflow
     def trainLightGBM(self, params: dict, train_func, dataset: any):
+        from ray.train.lightgbm import LightGBMTrainer
         # use AWS S3/minio as artifact repository
         os.environ["AWS_ACCESS_KEY_ID"] = params.get('s3_id')
         os.environ["AWS_SECRET_ACCESS_KEY"] = params.get('s3_key')

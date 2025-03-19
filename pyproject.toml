@@ -119,6 +119,8 @@ s3fs = "2024.1.0"
 boto3 = "1.35.90"
 dateparser = "1.2.0"
 minisom = "^2.3.3"
+polars = "1.22.0"
+ruptures = "^1.1.9"
 
 [build-system]
 requires = ["poetry-core"]

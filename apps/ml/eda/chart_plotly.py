@@ -50,9 +50,9 @@ def plt_stat_chart(kind, config, df, fields):
     # generate chart based on kind
     valid_f = [field for field in fields if field.get('omit') is None]
     match kind:
-        case 'overall':
-            # overall
-            fig = plt_stat_overall(config, df, fields)
+        case 'overview':
+            # overview
+            fig = plt_stat_overview(config, df, fields)
         case 'var':
             # Variance
             fig = plt_stat_var(config, df, valid_f)
@@ -423,9 +423,9 @@ def plt_ts_chart(kind, config, df, fields):
     return fig
 
 """
-Record Overall
+Record Overview
 """
-def plt_stat_overall(cfg, df, fields):
+def plt_stat_overview(cfg, df, fields):
     na_rows = df.isnull().T.any().sum()
     dup_rows = df.duplicated().sum()
     total_rows = len(df)
@@ -467,8 +467,8 @@ def plt_stat_overall(cfg, df, fields):
     miss_outer = pd.merge(miss_df, outer_df, how='left')
 
     fig = make_subplots(rows=2, cols=3, specs=[[{}, {'type': 'domain'}, {}], [{"colspan": 3}, None, None]],
-                        subplot_titles=['Field Stat by Attribute', 'Missing Rate',
-                                        'Missing Histogram by Count', 'Missing & Outlier by Field'],
+                        subplot_titles=['Field count by Attribute', 'Missing Rate',
+                                        'Missing histogram by Count', 'Missing & Outlier'],
                         horizontal_spacing=0.02, vertical_spacing=0.1)
     fig.add_trace(go.Bar(x=attr_names, y=attr_values, text=attr_values, name=''), row=1, col=1)
     fig.add_trace(go.Pie(labels=pie_names, values=pie_values, name='', textinfo='label+percent', hole=.5,
@@ -480,7 +480,10 @@ def plt_stat_overall(cfg, df, fields):
     fig.add_trace(go.Bar(x=miss_outer['name'], y=miss_outer['outer'], name='Outlier', text=miss_outer['outer']),
                   row=2, col=1)
 
-    fig.update_xaxes(row=1, col=3, type='category')
+    fig.update_yaxes(row=1, col=1, tickformat=",d")
+    fig.update_xaxes(row=1, col=3, tickformat=",d")
+    fig.update_yaxes(row=1, col=3, tickformat=",d")
+    fig.update_yaxes(row=2, col=1, tickformat=",d")
     fig.update_layout(showlegend=False, hovermode=None)
     fig.add_annotation(text=total_rows, x=.5, y=.79, font_size=18, showarrow=False, xref="paper", yref="paper")
     return fig
@@ -850,14 +853,22 @@ def plt_stat_outlier(cfg, df, fields):
             # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
             # 无监督，非线性
             cont_ratio = threshold if threshold else 0.05
-            som = MiniSom(10, 10, len(num_fields), sigma=0.3, learning_rate=0.1, neighborhood_function='triangle')
-            som.train_batch(df[num_fields].values, 100)
+            som = MiniSom(15, 15, len(num_fields), sigma=3, learning_rate=0.5, neighborhood_function='triangle')
+            som.train_batch(df[num_fields].values, 1000)
+            # 量化误差（Quantization Error）,计算每个样本到最近神经元（BMU, Best Matching Unit）的距离
             quantization_errors = np.linalg.norm(som.quantization(df[num_fields].values) - df[num_fields].values, axis=1)
+            # 基于分位数, x% outliers
             error_treshold = np.percentile(quantization_errors, (1-cont_ratio)*100)
             # outlier is True
             is_outlier = quantization_errors > error_treshold
             # 1: outlier
             y_pred = is_outlier.astype(int)
+
+            # 基于Z-Score, 3 omiga
+            # z_scores = np.abs(stats.zscore(quantization_errors))
+            # is_outlier = z_scores > 3
+            # y_pred = is_outlier.astype(int)
+
         case 'vae':
             # AutoEncoder(自编码器, unsupervised, neural network)
             cont_ratio = threshold if threshold else 0.05
@@ -900,7 +911,7 @@ def plt_stat_outlier(cfg, df, fields):
 
     vis_df = pd.DataFrame(data)
     vis_df['type'] = ['inner' if i == 0 else 'outlier' for i in y_pred]
-    title = 'Outlier detection by method {} ({})'.format(method, sum(y_pred))
+    title = f'Method: {method}, Outliers: {sum(y_pred)}'
     # discrete color
     # cmap = [[((i + 1) // 2) / 2, px.colors.qualitative.Plotly[i // 2]] for i in range(2 * 2)]
     if dim == 3:
@@ -1439,6 +1450,8 @@ def plt_ts_series(tsf, cfg, df, fields):
     v_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                  [field['name'] for field in fields if field['attr'] == 'disc']
 
+    cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
+
     if cfg.get('vf'):
         v_fields = [cfg['vf']]
 
@@ -1460,7 +1473,7 @@ def plt_ts_series(tsf, cfg, df, fields):
 
     period = 'D'
     if cfg.get('period'):
-        df, period = ts_resample(tsf, cfg, df, fields)
+        ts_df, period = ts_resample(tsf, cfg, df, fields)
         '''
         period = cfg['period']
         # aggregated by period (YS,QS,MS,W,D,h,min,s)
@@ -1474,8 +1487,10 @@ def plt_ts_series(tsf, cfg, df, fields):
             ts_df.index = ts_df.index.strftime('%Y-Q%q')
         '''
     else:
-        # without aggregation
-        ts_df = df.groupby(tsf).agg(agg_cfg)
+        cat_fields.insert(0, tsf)
+        ts_df = df.groupby(cat_fields).agg(agg_cfg)
+        ts_df.reset_index(inplace=True)
+        ts_df.set_index(tsf, inplace=True)
 
     if cfg.get('solo'):
         # put curves on separated charts
@@ -1488,15 +1503,15 @@ def plt_ts_series(tsf, cfg, df, fields):
         fig.update_layout(showlegend=False, height=rows * 300, hovermode='x')
     else:
         if cat_field:
-            if df[cat_field].nunique() > 50:
+            if ts_df[cat_field].nunique() > 50:
                 page = cfg['page'] if cfg.get('page') else 0
-                cat_values = df[cat_field].unique()
+                cat_values = ts_df[cat_field].unique()
                 cat_values.sort()
                 cat_50 = cat_values[page*50:(page+1)*50]
-                df = df[df[cat_field].isin(cat_50)]
-            df.reset_index(inplace=True)
+                ts_df = ts_df[ts_df[cat_field].isin(cat_50)]
+            ts_df.reset_index(inplace=True)
             # df.sort_values(by=[tsf, cat_field], inplace=True)
-            fig = px.line(df, x=tsf, y=v_fields[0], color=cat_field)
+            fig = px.line(ts_df, x=tsf, y=v_fields[0], color=cat_field)
             # fig.update_layout(legend_traceorder="normal")
         else:
             # put all curves on one chart
@@ -2344,10 +2359,30 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             # segment detection
             penalty = threshold if threshold else 5
             # model: l1, l2, rbf
+            # Linearly penalized segmentation (Pelt)
             algo = rpt.Pelt(model="rbf").fit(df[vf].values)
             bounds = algo.predict(pen=penalty)
+
+            # Dynamic programming (Dynp)
             # algo = rpt.Dynp(model="l2").fit(df[vf].values)
             # bounds = algo.predict(n_bkps=penalty)
+
+            # Binary segmentation (Binseg)
+            # algo = rpt.Binseg(model='normal', min_size=7).fit(df[vf].values)
+            # bounds = algo.predict(n_bkps=3)
+
+            # Bottom-up segmentation (BottomUp)
+            # algo = rpt.BottomUp(model='ar').fit(df[vf].values)
+            # bounds = algo.predict(n_bkps=3)
+
+            # Window-Based
+            # algo = rpt.Window(model="l2", width=28).fit(df[vf].values5
+            # bounds = algo.predict(n_bkps=3)
+
+            # Kernel Change Point Detection (KernelCPD)
+            # algo = rpt.KernelCPD(kernel='rbf', min_size=8).fit(df[vf].values)
+            # bounds = algo.predict(n_bkps=3)
+
             v_min = math.floor(df[vf].min())
             v_max = math.ceil(df[vf].max())
             y_pred = []
@@ -2488,14 +2523,20 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
     for field in fields:
         # find config of ts field to confirm period
         if field.get('name') == tsf and field.get('gap'):
-            period_min = int(field.get('gap'))
-            if period_min < 60 and (period == 'min' or period == 's'):
+            period_min = 1
+            if field.get('gap'):
+                period_min = int(field['gap'])
+            resample_min = 1
+            if field.get('resample'):
+                resample_min = int(field['resample'])
+            final_period = max(period_min, resample_min)
+            if final_period < 60 and (period == 'min' or period == 's'):
                 # update period to min period of this time series
-                period = f'{period_min}T'
+                period = f'{final_period}T'
                 break
-            elif period_min > 60 and period_min < 1440 and (period == 'h' or period == 'min' or period == 's'):
+            elif final_period > 60 and final_period < 1440 and (period == 'h' or period == 'min' or period == 's'):
                 # update period to min period of this time series
-                period_h = math.ceil(period_min / 60)
+                period_h = math.ceil(final_period / 60)
                 period = f'{period_h}H'
                 break
 
@@ -2556,6 +2597,9 @@ plt ts anomaly detection chart
 {"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
 """
 def ts_segment_reshaping(tsf: str, cfg: dict, df: pd.DataFrame, segments: list):
+    if (len(df) < 7) or (len(segments) < 2):
+        return df
+
     vf = cfg.get('vf')
     reshaped_df = None
     # segments always has a value at least
@@ -2578,19 +2622,16 @@ def ts_segment_reshaping(tsf: str, cfg: dict, df: pd.DataFrame, segments: list):
             stone = pd.concat([stone, seg_df.tail(2)])
             seg_df.drop(stone.index, inplace=True)
 
-
-        if len(seg_df) > 2 and seg_df[vf].std() < 0.6:
+        if seg_df[vf].std() < 1:
             # it is outlier if it is out of 2 sigma
-            th_lower = seg_df[vf].mean() - seg_df[vf].std() * 3
-            th_upper = seg_df[vf].mean() + seg_df[vf].std() * 3
+            mean = seg_df[vf].mean()
+            th_lower = mean - seg_df[vf].std() * 3
+            th_lower = min(th_lower, mean - abs(mean * 0.1))
+            th_upper = mean + seg_df[vf].std() * 3
+            th_upper = max(th_upper, mean + abs(mean * 0.1))
             # filter out outliers
-            outliers = seg_df[(seg_df[vf]>th_upper) | (seg_df[vf]<th_lower)]
-            # drop outliers from seg_df
-            seg_df.drop(outliers.index, inplace=True)
             # replace segment with current mean which exclude outlier
-            seg_df[vf] = seg_df[vf].mean()
-            # concat outliers to seg_df
-            seg_df = pd.concat([seg_df, outliers])
+            seg_df[(seg_df[vf]<th_upper) | (seg_df[vf]>th_lower)] = seg_df[vf].mean()
 
         # get boundary points back
         seg_df = pd.concat([seg_df, stone])

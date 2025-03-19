@@ -9,6 +9,7 @@ from apps.datamgr.views import app as src_app
 from apps.vis.views import app as vis_app
 from apps.ml.views import app as ml_app
 from apps.ai.views import app as ai_app
+from apps.sys.views import app as sys_app
 
 
 urlpatterns = [
@@ -16,5 +17,6 @@ urlpatterns = [
     {"ApiRouter": src_app, "prefix": "/src", "tags": ["Data Manager"]},
     {"ApiRouter": vis_app, "prefix": "/vis", "tags": ["Data Visualization"]},
     {"ApiRouter": ml_app, "prefix": "/ml", "tags": ["Machine Learning"]},
-    {"ApiRouter": ai_app, "prefix": "/ai", "tags": ["Artificial Intelligence"]}
+    {"ApiRouter": ai_app, "prefix": "/ai", "tags": ["Artificial Intelligence"]},
+    {"ApiRouter": sys_app, "prefix": "/sys", "tags": ["System"]}
 ]

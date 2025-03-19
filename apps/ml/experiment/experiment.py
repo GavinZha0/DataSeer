@@ -1,5 +1,3 @@
-from tarfile import version
-
 import mlflow
 from config import settings
 
