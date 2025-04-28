@@ -1,8 +1,12 @@
 import math
+from operator import index
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import torch
+import umap
 from gluonts.dataset.common import ListDataset
 from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.split import split
@@ -123,6 +127,9 @@ def plt_corr_chart(kind, config, df, fields):
         case 'ccm':
             # Correlation Coefficient Matrix
             fig = plt_corr_ccm(config, df, fields)
+        case 'cov':
+            # Covariance Matrix
+            fig = plt_corr_cov(config, df, fields)
         case 'curve':
             if config.get('andrews'):
                 # Andrews curves
@@ -141,18 +148,21 @@ def plt_corr_chart(kind, config, df, fields):
 dim reduction chart
 """
 def plt_reduction_chart(kind, config, df, fields):
-    # target field
     cat = None
     t_values = None
-    t_field = [field['name'] for field in fields if 'target' in field]
-    if t_field is not None:
-        f_df = df.drop(columns=t_field)
+
+    # target field
+    target_field = [field['name'] for field in fields if 'target' in field]
+    if target_field is not None and len(target_field) > 0:
+        f_df = df.drop(columns=target_field)
         for ele in fields:
             # find unique values of category field
-            if ele['name'] == t_field[0] and ele['attr'] == 'cat':
+            if ele['name'] == target_field[0] and ele['attr'] == 'cat':
                 t_values = ele.get('values')
                 cat = ele['name']
                 break
+    else:
+        f_df = df
 
     dim = 2  # keep all dims by default
     if config.get('dim'):
@@ -169,12 +179,19 @@ def plt_reduction_chart(kind, config, df, fields):
     if config.get('neighbor'):
         neighbor = config['neighbor']
 
+    metric = 'euclidean'
+    if config.get('metric'):
+        metric = config['metric']
+
     title = None
     labels = {str(i): kind.upper() + f"{i}" for i in range(dim)}
+
+    # only numerical columns
+    f_df = f_df.select_dtypes(include='number')
     fig = go.Figure()
     match kind:
         case 'pca':
-            if config.get('kernel'):
+            if config.get('kernel') and config['kernel'] != 'linear':
                 # Kernel PCA (linear, poly, rbf, sigmoid, cosine)
                 # 先将数据从原空间映射到高维空间，然后在特征空间进行PCA
                 # 引入核函数解决非线性数据映射问题,计算协方差矩阵时使用了核函数
@@ -228,14 +245,21 @@ def plt_reduction_chart(kind, config, df, fields):
             perplex = 30
             if config.get('perplex'):
                 perplex = config['perplex']
-            pca = manifold.TSNE(n_components=dim, perplexity=perplex, init='pca')
+            pca = manifold.TSNE(n_components=dim, perplexity=perplex, metric=metric, init='pca')
+            data = pca.fit_transform(f_df)
+        case 'umap':
+            # Uniform Manifold Approximation and Projection(等距 manifold 近似和投影算法)
+            # 解决MDS算法在非线性结构数据集上的弊端,数据在向低维空间映射之后能够保持流形不变
+            # 常用于手写数字等数据的降维
+            # 无监督，非线性
+            pca = umap.UMAP(n_components=dim, metric=metric, n_neighbors=neighbor)
             data = pca.fit_transform(f_df)
         case 'isomap':
             # isometric mapping (等度量映射算法)
             # 解决MDS算法在非线性结构数据集上的弊端,数据在向低维空间映射之后能够保持流形不变
             # 常用于手写数字等数据的降维
             # 无监督，非线性
-            pca = manifold.Isomap(n_components=dim, n_neighbors=neighbor)
+            pca = manifold.Isomap(n_components=dim, metric=metric, n_neighbors=neighbor)
             data = pca.fit_transform(f_df)
         case 'lle':
             # locally linear embedding(局部线性嵌入算法)
@@ -297,7 +321,7 @@ def plt_reduction_chart(kind, config, df, fields):
     # convert 2 dim array to dataframe
     dim_df = pd.DataFrame(data)
     # add target field
-    dim_df[t_field] = df[t_field]
+    dim_df[target_field] = df[target_field]
 
     if t_values and df[cat].dtype == 'category':
         # replace codes to category names
@@ -593,6 +617,7 @@ def plt_stat_anova(cfg, df, fields):
     sel_field = cfg['field']
     sel_attr = None
     sel_values = None
+    title = ''
     for ele in fields:
         if ele['name'] == sel_field:
             sel_attr = ele['attr']
@@ -611,6 +636,9 @@ def plt_stat_anova(cfg, df, fields):
 
         title = 'One-way ANOVA based on category field ' + sel_field
         num_col = 3
+        if len(num_fields) < 3:
+            num_col = len(num_fields)
+
         num_row = math.ceil(len(num_fields) / num_col)
         fig = make_subplots(rows=num_row, cols=num_col,
                             subplot_titles=['{}'.format(n) for n in num_fields],
@@ -637,12 +665,12 @@ def plt_stat_anova(cfg, df, fields):
                               (idx // num_col) + 1, (idx % num_col) + 1)
             # update subplot title to add p-value
             fig.layout.annotations[idx].text = '{} (p={})'.format(name, np.round(p_v, 3))
-        fig.update_layout(title=title, showlegend=False)
     elif sel_attr == 'conti' or sel_attr == 'disc':
         # multiple-factor anova (包括Two-way ANOVA)
         # 分析两个及以上分类特征对一个数值特征的影响程度
         # 模型的公式为“y ~ A + B + C + A*B + A*C + B*C + A*B*C”，
         # y是因变量，A、B和C是自变量。A:B、A:C和B:C是自变量的交互作用。
+        title = 'Multiple-factor ANOVA for numeric field ' + sel_field
         formula = sel_field + '~'
         for name in cat_fields:
             formula = formula + '+' + name
@@ -653,6 +681,7 @@ def plt_stat_anova(cfg, df, fields):
         fp_df['PR(>F)'] = (fp_df['PR(>F)'] * 100).round(5)
         fig.add_trace(go.Bar(x=fp_df.index, y=fp_df['PR(>F)']))
     fig.update_xaxes(type='category')
+    fig.update_layout(title=title, showlegend=False)
     return fig
 
 """
@@ -674,6 +703,10 @@ def plt_stat_outlier(cfg, df, fields):
     metric = 'euclidean'
     if cfg.get('metric'):
         metric = cfg['metric']
+
+    disp = 'pca'
+    if cfg.get('disp'):
+        disp = cfg['disp']
 
     # contamination: 默认为0.05，即5%的异常值
     # irq_coff: 默认为1.6，即1.6倍IQR
@@ -795,8 +828,9 @@ def plt_stat_outlier(cfg, df, fields):
             #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
             #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
             # 'minkowski' does not work
-            distance = threshold if threshold else 0.5
-            clf = DBSCAN(eps=distance, metric=metric)
+            radius = threshold if threshold else 0.5
+            min_s = cfg['min_samples'] if cfg.get('min_samples') else 5
+            clf = DBSCAN(eps=radius, min_samples=min_s, metric=metric)
             clf.fit(df[num_fields])
             y_pred = [1 if i < 0 else 0 for i in clf.labels_]
         case 'svm':
@@ -805,7 +839,7 @@ def plt_stat_outlier(cfg, df, fields):
                 kernel = cfg['kernel']
             # One-Class SVM (classfication-based)
             # kernel: 'linear', 'poly', 'rbf', 'sigmoid', 'precomputed'
-            cont_ratio = threshold if threshold else 0.05
+            cont_ratio = threshold if threshold else 0.03
             clf = OCSVM(nu=0.5, contamination=cont_ratio, kernel=kernel)
             clf.fit(df[num_fields])
             y_pred = clf.labels_
@@ -818,7 +852,7 @@ def plt_stat_outlier(cfg, df, fields):
             # 'sqeuclidean', 'yule']
             # 'correlation' does not work
             # contamination: proportion of outliers
-            cont_ratio = threshold if threshold else 0.05
+            cont_ratio = threshold if threshold else 0.03
             clf = KNN(contamination=cont_ratio, n_neighbors=5, method='mean', metric=metric)
             clf.fit(df[num_fields])
             # 1: outlier
@@ -830,12 +864,12 @@ def plt_stat_outlier(cfg, df, fields):
             # 'mahalanobis', 'matching', 'minkowski', 'rogerstanimoto',
             # 'russellrao', 'seuclidean', 'sokalmichener', 'sokalsneath',
             # 'sqeuclidean', 'yule']
-            cont_ratio = threshold if threshold else 0.05
+            cont_ratio = threshold if threshold else 0.03
             clf = LOF(contamination=cont_ratio, n_neighbors=10, metric=metric)
             y_pred = clf.fit_predict(df[num_fields])
         case 'cof':
             # Connectivity-Based Outlier Factor (COF, LOF的变种, density-based)
-            cont_ratio = threshold if threshold else 0.05
+            cont_ratio = threshold if threshold else 0.03
             clf = COF(contamination=cont_ratio, n_neighbors=15)
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
@@ -844,7 +878,7 @@ def plt_stat_outlier(cfg, df, fields):
             # unsupervised, global outlier detection
             # contamination: percentage of outliers
             # n_estimators: total of trees
-            cont_ratio = threshold if threshold else 0.05
+            cont_ratio = threshold if threshold else 0.03
             clf = IForest(contamination=cont_ratio, n_estimators=100, max_samples='auto')
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
@@ -852,8 +886,8 @@ def plt_stat_outlier(cfg, df, fields):
             # self-organizing map(自组织映射算法)
             # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
             # 无监督，非线性
-            cont_ratio = threshold if threshold else 0.05
-            som = MiniSom(15, 15, len(num_fields), sigma=3, learning_rate=0.5, neighborhood_function='triangle')
+            cont_ratio = threshold if threshold else 0.03
+            som = MiniSom(15, 15, len(num_fields), sigma=3, learning_rate=0.5, activation_distance=metric, neighborhood_function='triangle')
             som.train_batch(df[num_fields].values, 1000)
             # 量化误差（Quantization Error）,计算每个样本到最近神经元（BMU, Best Matching Unit）的距离
             quantization_errors = np.linalg.norm(som.quantization(df[num_fields].values) - df[num_fields].values, axis=1)
@@ -871,8 +905,14 @@ def plt_stat_outlier(cfg, df, fields):
 
         case 'vae':
             # AutoEncoder(自编码器, unsupervised, neural network)
-            cont_ratio = threshold if threshold else 0.05
-            auto_encoder = vae.VAE(epoch_num=50, batch_size=32, contamination=cont_ratio)
+            epoch = cfg.get('epoch', 1)
+            batch = cfg.get('batch', 32)
+            cont_ratio = threshold if threshold else 0.03
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+                auto_encoder = vae.VAE(epoch_num=epoch, batch_size=batch, contamination=cont_ratio, device=device)
+            else:
+                auto_encoder = vae.VAE(epoch_num=epoch, batch_size=batch, contamination=cont_ratio)
             auto_encoder.fit(df[num_fields])
             # 1: outlier
             y_pred = auto_encoder.predict(df[num_fields])
@@ -880,10 +920,7 @@ def plt_stat_outlier(cfg, df, fields):
             return fig
 
     # display outliers by t-SNE/UMAP chart
-    dim = 2
-    if cfg.get('d3'):
-        dim = 3
-
+    dim = cfg.get('dim', 2)
     if len(num_fields)==1:
         # time series with one value field
         date_fields = [field['name'] for field in fields if field['attr'] == 'date' or 'timeline' in field]
@@ -900,31 +937,96 @@ def plt_stat_outlier(cfg, df, fields):
     else:
         dim = min(dim, len(num_fields))
 
-    # visualization solution of 2d/3d
-    if cfg.get('umap'):
-        aa = 55
+    labels = None
+    # visualization solution
+    if disp == 'umap':
         # UMAP: Uniform Manifold Approximation and Projection
-        # data = umap.UMAP(n_components=dim).fit_transform(df[num_fields])
-    else:
+        data = umap.UMAP(n_components=dim, metric=metric).fit_transform(df[num_fields])
+    elif disp == 'tsne':
         # t-distributed Stochastic Neighbor Embedding
-        data = manifold.TSNE(n_components=dim).fit_transform(df[num_fields])
+        data = manifold.TSNE(n_components=dim, metric=metric).fit_transform(df[num_fields])
+    else:
+        # PCA (Principal Component Analysis)
+        pca = PCA(n_components=dim)
+        data = pca.fit_transform(df[num_fields])
+        labels = {
+            f'd{i}': f"PCA{i} ({var:.1f}%)"
+            for i, var in enumerate(pca.explained_variance_ratio_ * 100)
+        }
 
-    vis_df = pd.DataFrame(data)
+    vis_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
+    vis_cols = vis_df.columns.tolist()
     vis_df['type'] = ['inner' if i == 0 else 'outlier' for i in y_pred]
+    vis_df.reset_index(inplace=True)
     title = f'Method: {method}, Outliers: {sum(y_pred)}'
     # discrete color
     # cmap = [[((i + 1) // 2) / 2, px.colors.qualitative.Plotly[i // 2]] for i in range(2 * 2)]
-    if dim == 3:
-        fig = px.scatter_3d(vis_df, x=0, y=1, z=2, size=[5]*len(vis_df), color=vis_df['type'], size_max=10, opacity=1,
-                            color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                            category_orders={'type': ['inner', 'outlier']}, title=title)
-    else:
-        fig = px.scatter(vis_df, x=0, y=1, color='type', title=title,
-                         color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                         category_orders={'type': ['inner', 'outlier']})
+    if dim > 3:
+        mean_v = np.mean(data, axis=0)
+        std_v = np.std(data, axis=0)
+        th_upper = mean_v + 8 * std_v
+        th_lower = mean_v + 2 * std_v
+        mean_v = mean_v + 5 * std_v
 
-    fig.update_layout(title=title, xaxis_title='', yaxis_title='', legend_title_text='',
-                      legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
+        max_mean = max(mean_v)
+        off_set = []
+        for i in range(len(mean_v)):
+            if mean_v[i] != max_mean:
+                off_set.append(math.floor(max_mean - mean_v[i]))
+            else:
+                off_set.append(0)
+
+        mean_v = mean_v + np.array(off_set)
+        th_upper = th_upper + np.array(off_set)
+        th_lower = th_lower + np.array(off_set)
+
+        # outliers
+        out_df = vis_df[vis_df['type'] == 'outlier']
+        out_df[vis_cols] = out_df[vis_cols] + pd.Series(mean_v, index=vis_cols)
+        df_melted = pd.melt(out_df,
+                            id_vars=['index'],
+                            value_vars=vis_cols,
+                            var_name='feature',
+                            value_name='value')
+        fig = px.line_polar(df_melted, r='value', theta='feature', color='index', line_close=True)
+
+        # mean
+        fig.add_trace(go.Scatterpolar(
+            r=mean_v.tolist() + [mean_v[0]],
+            theta=vis_cols + [vis_cols[0]],
+            line=dict(color='blue', width=2),
+            name='Mean'
+        ))
+
+        # upper threshold
+        fig.add_trace(go.Scatterpolar(
+            r=th_upper.tolist() + [th_upper[0]],
+            theta=vis_cols + [vis_cols[0]],
+            fill='toself',
+            fillcolor='rgba(0,100,80,0.2)',
+            line=dict(color='rgba(0,0,0,0)'),  # 隐藏边线
+            name='99%'
+        ))
+
+        # lower threshold
+        fig.add_trace(go.Scatterpolar(
+            r=th_lower.tolist() + [th_lower[0]],
+            theta=vis_cols + [vis_cols[0]],
+            fill='toself',
+            fillcolor='rgba(255,255,255,1)',     # 白色填充覆盖下层
+            line=dict(color='rgba(0,0,0,0)'),  # 隐藏边线
+            name=''
+        ))
+    elif dim == 3:
+        fig = px.scatter_3d(vis_df, x='d0', y='d1', z='d2', size=[5]*len(vis_df), color=vis_df['type'], size_max=10, opacity=1,
+                            color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
+                            category_orders={'type': ['inner', 'outlier']}, title=title, labels=labels)
+    else:
+        fig = px.scatter(vis_df, x='d0', y='d1', color='type', title=title, labels=labels,
+                         color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
+                         category_orders={'type': ['inner', 'outlier']}, hover_name='index')
+
+    fig.update_layout(legend_title_text='', legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
     return fig
 
 
@@ -1277,8 +1379,7 @@ def plt_corr_ccm(cfg, df, fields):
     # Spearman系数不假设连续变量服从何种分布，如果是顺序变量(Ordinal)，推荐使用Spearman。
     # Kendall 用于检验连续变量和类别变量间的相关性
     # 卡方检验(Chi-squared Test)，检验类别变量间的相关性
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
     cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
     coeff = 'pearson'  # pearson, kendall, spearman
     if cfg.get('coeff'):
@@ -1299,6 +1400,28 @@ def plt_corr_ccm(cfg, df, fields):
     fig.update_layout(xaxis_showgrid=False, yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
     return fig
 
+"""
+COV: Covariance Matrix
+"""
+def plt_corr_cov(cfg, df, fields):
+    # Covariance Matrix: 协方差矩阵
+    num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
+    cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
+    if cfg.get('num'):
+        df_corr = df[[n for n in num_fields]].cov(numeric_only=True).round(2)
+    else:
+        df_corr = df[[n for n in num_fields + cat_fields]].corr(numeric_only=False).round(2)
+
+    mask = np.triu(np.ones_like(df_corr, dtype=bool))
+    viz_corr = df_corr.mask(mask).dropna(how='all').dropna(axis=1, how='all')
+    viz_corr = viz_corr.replace({np.nan: ''})
+
+    fig = go.Figure()
+    fig.add_trace(go.Heatmap(z=viz_corr, x=viz_corr.columns, y=viz_corr.index,
+                             hoverinfo="none", colorscale=px.colors.diverging.RdBu, text=viz_corr.values,
+                             texttemplate="%{text}", zmin=-1, zmax=1, ygap=1, xgap=1))
+    fig.update_layout(xaxis_showgrid=False, yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
+    return fig
 
 
 """
@@ -1503,7 +1626,8 @@ def plt_ts_series(tsf, cfg, df, fields):
         fig.update_layout(showlegend=False, height=rows * 300, hovermode='x')
     else:
         if cat_field:
-            if ts_df[cat_field].nunique() > 50:
+            num_cat = ts_df[cat_field].nunique()
+            if num_cat > 50:
                 page = cfg['page'] if cfg.get('page') else 0
                 cat_values = ts_df[cat_field].unique()
                 cat_values.sort()
@@ -1513,6 +1637,7 @@ def plt_ts_series(tsf, cfg, df, fields):
             # df.sort_values(by=[tsf, cat_field], inplace=True)
             fig = px.line(ts_df, x=tsf, y=v_fields[0], color=cat_field)
             # fig.update_layout(legend_traceorder="normal")
+            fig.update_layout(legend_title_text=f'{cat_field} ({num_cat})')
         else:
             # put all curves on one chart
             [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name=nf, connectgaps=connected,
@@ -2548,6 +2673,8 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
         # unique categories
         cat_values = df[cat_field].unique()
         # sort categories
+        if isinstance(cat_values, pd.Categorical):
+            cat_values = cat_values.categories.tolist()
         cat_values.sort()
         # get current page. 50 categories
         cat_50 = cat_values[page * 50:(page + 1) * 50]
@@ -2569,7 +2696,22 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
             else:
                 resampled_df = pd.concat([resampled_df, cat_df])
     else:
-        resampled_df = df.resample(period).agg(agg)
+        cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
+        num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
+        if len(cat_fields) == 0 or len(df.columns) == 1 or len(df.columns) < len(cat_fields):
+            resampled_df = df.resample(period).agg(agg)
+        else:
+            grouped = df.groupby(cat_fields)
+            resampled_list = []
+            for name, group in grouped:
+                resampled = group.resample(period)[num_fields].agg(agg)
+                group_mean = group[num_fields].mean()
+                resampled = resampled.fillna(group_mean)
+                resampled[cat_fields] = name
+                resampled_list.append(resampled)
+            resampled_df = pd.concat(resampled_list)
+            resampled_df.sort_index(inplace=True)
+
 
     # value field
     num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
