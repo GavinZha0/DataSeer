@@ -1,5 +1,4 @@
 import math
-from operator import index
 
 import numpy as np
 import pandas as pd
@@ -12,7 +11,7 @@ from gluonts.dataset.pandas import PandasDataset
 from gluonts.dataset.split import split
 from gluonts.torch import DeepAREstimator
 from minisom import MiniSom
-from pyod.models import vae, dif, ecod, xgbod, ae1svm, devnet, deep_svdd
+from pyod.models import vae, dif, ecod, ae1svm, deep_svdd
 from pyod.models.knn import KNN
 from sklearn import manifold
 from sklearn.cluster import DBSCAN
@@ -94,8 +93,8 @@ def plt_dist_chart(kind, config, df, fields):
         case 'ridge':
             # ridge plot for kde
             fig = plt_dist_ridge(config, df, fields)
-        case 'freq':
-            fig = plt_dist_freq(config, df, fields)
+        case 'volume':
+            fig = plt_dist_volume(config, df, fields)
         case 'kde_2d':
             # 2d kde
             fig = plt_dist_kde2d(config, df, fields)
@@ -321,19 +320,23 @@ def plt_reduction_chart(kind, config, df, fields):
     # convert 2 dim array to dataframe
     dim_df = pd.DataFrame(data)
     # add target field
-    dim_df[target_field] = df[target_field]
+    # dim_df[target_field] = df[target_field]
+    dim_df = pd.concat([dim_df, df], axis=1)
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
 
     if t_values and df[cat].dtype == 'category':
         # replace codes to category names
         dim_df[cat] = dim_df[cat].cat.rename_categories(t_values)
 
     if dim == 1:
-        fig = px.scatter(x=dim_df.index, y=dim_df[0], color=None if cat is None else dim_df[cat], labels=labels, title=title)
+        fig = px.scatter(x=dim_df.index, y=dim_df[0], color=None if cat is None else dim_df[cat],
+                         labels=labels, title=title, hover_data=num_fields)
     elif dim == 2:
-        fig = px.scatter(dim_df, x=0, y=1, color=None if cat is None else dim_df[cat], labels=labels, title=title)
+        fig = px.scatter(dim_df, x=0, y=1, color=None if cat is None else dim_df[cat],
+                         labels=labels, title=title, hover_data=num_fields)
     elif dim == 3:
         fig = px.scatter_3d(dim_df, x=0, y=1, z=2, size=[5]*len(dim_df), size_max=10, labels=labels, title=title,
-                            color=None if cat is None else dim_df[cat])
+                            color=None if cat is None else dim_df[cat], hover_data=num_fields)
     else:
         fig = go.Figure(go.Table(header=dict(values=[kind + f'{i}' for i in range(dim)]),
                                  cells=dict(values=np.transpose(np.round(data, 3)))))
@@ -473,8 +476,7 @@ def plt_stat_overview(cfg, df, fields):
     miss_df.reset_index(inplace=True, names=['name'])
     miss_df.rename(columns={0: 'miss'}, inplace=True)
 
-    num_fields = [field['name'] for field in valid_f if field['attr'] == 'conti'] + \
-                 [field['name'] for field in valid_f if field['attr'] == 'disc']
+    num_fields = [field['name'] for field in valid_f if field['attr'] in ('conti', 'disc')]
 
     coff = 1.6
     # get statistics info
@@ -532,10 +534,19 @@ def plt_stat_box(cfg, df, fields):
     if cfg.get('outlier'):
         outlier = 'outliers'
 
+    title = 'Box plot (mean)'
+    if boxmean == 'sd' and outlier == 'outliers':
+        title = 'Box plot (mean, std dev and outlier)'
+    elif boxmean == 'sd':
+        title = 'Box plot (mean and std dev)'
+    elif outlier == 'outliers':
+        title = 'Box plot (mean and outlier)'
+
     # category field
     cf = None
     if cfg.get('cf'):
         cf = cfg['cf']
+        title += f', Category field: {cf}'
 
     # quantilemethod: linear, inclusive, exclusive
     fig = go.Figure()
@@ -543,15 +554,18 @@ def plt_stat_box(cfg, df, fields):
         for name in sorted_name:
             fig.add_trace(go.Box(y=df[name], name=name, boxmean=boxmean, boxpoints=outlier))
     else:
+        c_values = df[cf]
+        '''
+        for f in fields:
+            if f['name'] == cf and f.get('values'):
+                c_values = df[cf].map(dict(enumerate(f['values'])))
+                break
+        '''
         for name in sorted_name:
-            c_values = df[cf]
-            for f in fields:
-                if f['name'] == cf and f.get('values'):
-                    c_values = df[cf].map(dict(enumerate(f['values'])))
-                    break
             fig.add_trace(go.Box(x=c_values, y=df[name], name=name, boxmean=boxmean, boxpoints=outlier))
         fig.update_layout(boxmode='group')
 
+    fig.update_layout(title=title)
     return fig
 
 """
@@ -561,19 +575,23 @@ def plt_stat_violin(cfg, df, fields):
     num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                  [field['name'] for field in fields if field['attr'] == 'disc']
     sorted_name = df[[n for n in num_fields]].mean(numeric_only=True).sort_values().index
+    title = 'Violin plot (mean and std dev)'
 
     box = False
-    if 'box' in cfg:
+    if cfg.get('box'):
         box = cfg['box']
 
     outlier = False
     if cfg.get('outlier'):
         outlier = 'outliers'
+        title = 'Violin plot (mean, std dev and outlier)'
 
     # category field
     cf = None
     if cfg.get('cf'):
         cf = cfg['cf']
+        title += f', Category field: {cf}'
+
 
     # quantilemethod: linear, inclusive, exclusive
     fig = go.Figure()
@@ -581,17 +599,44 @@ def plt_stat_violin(cfg, df, fields):
         for name in sorted_name:
             fig.add_trace(go.Violin(y=df[name], name=name, points=outlier, box_visible=box, meanline_visible=True))
     else:
+        c_values = df[cf]
+        '''
+        for f in fields:
+            if f['name'] == cf and f.get('values'):
+                c_values = df[cf].map(dict(enumerate(f['values'])))
+                break
+        '''
         for name in sorted_name:
-            c_values = df[cf]
-            for f in fields:
-                if f['name'] == cf and f.get('values'):
-                    c_values = df[cf].map(dict(enumerate(f['values'])))
-                    break
             fig.add_trace(go.Violin(x=c_values, y=df[name], name=name, points=outlier, box_visible=box, meanline_visible=True))
         fig.update_layout(violinmode='group')
 
+    fig.update_layout(title=title)
     return fig
 
+"""
+Omega squared and eta squared
+"""
+def calculate_effect_size(md, anova_table, type='omega_sq'):
+    if type == 'eta_sq':
+        anova_table['effect'] = anova_table['sum_sq'] / sum(anova_table['sum_sq'])
+    else:
+        # 手动计算总平方和 SSTotal = SSE（残差） + SSB（因子）
+        SSTotal = np.var(md.model.endog, ddof=0) * len(md.model.endog)
+        SSB = anova_table['sum_sq'].sum()  # 所有因子的平方和之和
+        SSE = SSTotal - SSB  # 残差平方和 = 总平方和 - 组间平方和
+
+        # 自由度
+        DFB_total = anova_table['df'].sum()
+        DFT = len(md.model.endog) - 1
+        DFE = DFT - DFB_total  # 残差自由度
+
+        # 计算 omega-squared
+        anova_table['effect'] = (anova_table['sum_sq'] - (anova_table['df'] * SSE / DFE)) / (SSTotal + SSE)
+
+    bins = [0, 0.01, 0.05, 0.1, 1]
+    labels = ['high', 'medium', 'low', 'no']
+    anova_table['Significant'] = pd.cut(anova_table['PR(>F)'], bins=bins, labels=labels, right=False)
+    return anova_table
 
 """
 ANOVA: Analysis of Variance (方差分析，变异分析, or F test)
@@ -605,8 +650,7 @@ Multiple-factor(include two-way) ANOVA,多(双)因素分析，分析两个及以
 ANOVA目的是检验每个组的平均数是否相同
 """
 def plt_stat_anova(cfg, df, fields):
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
     cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
     fig = go.Figure()
     # calculate all numeric fields based on selected category field (1 cat: one-way, 2cats: two-way)
@@ -634,7 +678,7 @@ def plt_stat_anova(cfg, df, fields):
             # get category names for displaying if it is category type
             cat_names = sel_values
 
-        title = 'One-way ANOVA based on category field ' + sel_field
+        title = f'One-way ANOVA, Category field: {sel_field}({len(cat_names)})'
         num_col = 3
         if len(num_fields) < 3:
             num_col = len(num_fields)
@@ -647,41 +691,108 @@ def plt_stat_anova(cfg, df, fields):
         for idx, name in enumerate(num_fields):
             # mean and std of every category group
             mean_std = df.groupby(by=sel_field, observed=True)[name].agg(['mean', 'std']).reset_index()
+            if cfg.get('order'):
+                # sort by 'mean' or 'std'
+                mean_std.sort_values(by=cfg.get('order'), ascending=False, inplace=True)
+
             # the data of every category group
             cat_data = [df[df[sel_field] == c][name] for c in cat_list]
             # get p value then insert to mean_std
             # F = MSB/MSE(组间方差与组内方差的比率，对比F分布统计表，如果大于临界值，说明总体均值间存在差异)
             # pValue<0.05，说明分类数据间存在显著差异
+            # 当均值差异较大且标准差较小时，p值通常较小，这表明统计显著性较强。
+            # 相反，当均值差异较小或者标准差较大时，p值通常较大，这表明统计显著性较弱。
+            # p值可以看作是一种综合考虑了均值差异和标准差差异的指标
             f_v, p_v = stats.f_oneway(*cat_data)
             # mean_std.insert(2, 'pvalue', np.round(p_v, 3))
-            if cfg.get('line'):
-                fig.add_trace(go.Scatter(x=cat_names, y=mean_std['mean'].round(3), name='',
+            if cfg.get('style') == 'line':
+                fig.add_trace(go.Scatter(x=mean_std[sel_field], y=mean_std['mean'].round(3), name='',
                                          error_y=dict(type='data', array=mean_std['std'].round(3))),
                               (idx // num_col) + 1, (idx % num_col) + 1)
             else:
                 # mean-std chart by categories for selected numeric field
-                fig.add_trace(go.Bar(x=cat_names, y=mean_std['mean'].round(3), name='',
+                fig.add_trace(go.Bar(x=mean_std[sel_field], y=mean_std['mean'].round(3), name='',
                                      error_y=dict(type='data', array=mean_std['std'].round(3))),
                               (idx // num_col) + 1, (idx % num_col) + 1)
             # update subplot title to add p-value
-            fig.layout.annotations[idx].text = '{} (p={})'.format(name, np.round(p_v, 3))
+            if p_v < 0.01:
+                fig.layout.annotations[idx].text = f'{name} (p={np.round(p_v*100, 1)}%, high)'
+            elif p_v < 0.05:
+                fig.layout.annotations[idx].text = f'{name} (p={np.round(p_v*100, 1)}%, medium)'
+            elif p_v < 0.1:
+                fig.layout.annotations[idx].text = f'{name} (p={np.round(p_v*100, 1)}%, low)'
+            else:
+                fig.layout.annotations[idx].text = f'{name} (p={np.round(p_v*100, 1)}%, no)'
+        fig.update_layout(title=title, showlegend=False, yaxis_title='Mean-Std Dev')
+        fig.update_xaxes(type='category')
     elif sel_attr == 'conti' or sel_attr == 'disc':
         # multiple-factor anova (包括Two-way ANOVA)
         # 分析两个及以上分类特征对一个数值特征的影响程度
         # 模型的公式为“y ~ A + B + C + A*B + A*C + B*C + A*B*C”，
-        # y是因变量，A、B和C是自变量。A:B、A:C和B:C是自变量的交互作用。
-        title = 'Multiple-factor ANOVA for numeric field ' + sel_field
+        # y是因变量，A、B和C是自变量。A*B、A*C和B*C是自变量的交互作用。
+        # "y ~ A + B + C" 表示不考虑交互作用，而只考虑A、B和C三个自变量对y的影响。
+        title = f'Multiple-factor ANOVA, Value field: {sel_field}'
         formula = sel_field + '~'
         for name in cat_fields:
-            formula = formula + '+' + name
+            formula += '+' + name
         ana = smf.ols(formula, data=df).fit()
         fp_df = sm.stats.anova_lm(ana, type=2).dropna(how='any')
-        # % percentage (<5%: 显著相关)
-        fp_df.sort_values(by='PR(>F)', inplace=True)
-        fp_df['PR(>F)'] = (fp_df['PR(>F)'] * 100).round(5)
-        fig.add_trace(go.Bar(x=fp_df.index, y=fp_df['PR(>F)']))
-    fig.update_xaxes(type='category')
-    fig.update_layout(title=title, showlegend=False)
+        # PR(>F) is p-value, <5%: 显著相关
+        # F值越大，p值越小，p值越小，越显著
+        # convert p-value to -log10() for displaying
+        # -log10(p-value) 越大越显著
+        # 1e-308 is used to avoid division by zero (inf->308)
+        fp_df['neg_log10'] = -np.log10(fp_df['PR(>F)'].replace(0, 1e-308))
+        effect_type = cfg.get('effect', 'omega_sq')
+
+        fp_df = calculate_effect_size(ana, fp_df, effect_type)
+        effect_threshold1 = 0.06
+        effect_threshold2 = 0.14
+        p_threshold1 = -np.log10(0.01)
+        p_threshold2 = -np.log10(0.05)
+        p_threshold3 = -np.log10(0.1)
+        if cfg.get('style') == 'scatter':
+            color_map = {'high': 'red', 'medium': 'orange', 'low': 'green', 'no': 'gray'}
+            fig = px.scatter(fp_df, x='effect', y='neg_log10', color='Significant', text=fp_df.index,
+                             color_discrete_map=color_map,
+                             title=title, labels={'effect': f'Effect({effect_type})', 'neg_log10': '-Log10(p)'})
+            fig.update_traces(marker_size=10, textposition="bottom center")
+            fig.update_layout(
+                shapes=[
+                    # reference line for Effect size
+                    dict(type="line", x0=effect_threshold1, x1=effect_threshold1, y0=fp_df['neg_log10'].min(),
+                         y1=fp_df['neg_log10'].max(),
+                         line=dict(color="green", width=2, dash="dash")),
+                    dict(type="line", x0=effect_threshold2, x1=effect_threshold2, y0=fp_df['neg_log10'].min(),
+                         y1=fp_df['neg_log10'].max(),
+                         line=dict(color="orange", width=2, dash="dash")),
+                    # reference line for p value
+                    dict(type="line", x0=fp_df['effect'].min(), x1=fp_df['effect'].max(), y0=p_threshold1,
+                         y1=p_threshold1,
+                         line=dict(color="orange", width=2, dash="dash")),
+                    dict(type="line", x0=fp_df['effect'].min(), x1=fp_df['effect'].max(), y0=p_threshold2,
+                         y1=p_threshold2,
+                         line=dict(color="green", width=2, dash="dash")),
+                    dict(type="line", x0=fp_df['effect'].min(), x1=fp_df['effect'].max(), y0=p_threshold3,
+                         y1=p_threshold3,
+                         line=dict(color="gray", width=2, dash="dash"))
+                ]
+            )
+        else:
+            # sort by 'neg_log10'
+            fp_df.sort_values(by='neg_log10', ascending=False, inplace=True)
+            fig.add_trace(
+                go.Bar(x=fp_df.index, y=fp_df['neg_log10'].round(3), customdata=(fp_df['PR(>F)'] * 100).round(1),
+                       texttemplate='%{y}<br>(p=%{customdata}%)'))
+            fig.update_layout(title=title, showlegend=False, yaxis_title='-Log10(p)', shapes=[
+                dict(
+                    type="line",
+                    x0=0, x1=1,
+                    y0=p_threshold2, y1=p_threshold2, xref="paper", yref="y",
+                    line=dict(color="orange", width=2, dash="dash")
+                )
+            ])
+            fig.update_xaxes(type='category')
     return fig
 
 """
@@ -692,8 +803,7 @@ def plt_stat_outlier(cfg, df, fields):
     valid_fields = [field['name'] for field in fields if 'omit' not in field]
     target_field = [field['name'] for field in fields if 'target' in field]
     feature_fields = list(set(valid_fields).difference(set(target_field)))
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc' and 'target' not in field]
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc') and 'target' not in field]
     fig = go.Figure()
 
     method = 'quantile'
@@ -957,6 +1067,7 @@ def plt_stat_outlier(cfg, df, fields):
     vis_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
     vis_cols = vis_df.columns.tolist()
     vis_df['type'] = ['inner' if i == 0 else 'outlier' for i in y_pred]
+    vis_df = pd.concat([df, vis_df], axis=1)
     vis_df.reset_index(inplace=True)
     title = f'Method: {method}, Outliers: {sum(y_pred)}'
     # discrete color
@@ -982,13 +1093,17 @@ def plt_stat_outlier(cfg, df, fields):
 
         # outliers
         out_df = vis_df[vis_df['type'] == 'outlier']
+        org_df = out_df[num_fields]
         out_df[vis_cols] = out_df[vis_cols] + pd.Series(mean_v, index=vis_cols)
         df_melted = pd.melt(out_df,
-                            id_vars=['index'],
-                            value_vars=vis_cols,
-                            var_name='feature',
-                            value_name='value')
-        fig = px.line_polar(df_melted, r='value', theta='feature', color='index', line_close=True)
+                            id_vars=['index'], # keep index as id
+                            value_vars=vis_cols, # put value of [d0, d1, d2, d3] into one column(value_name)
+                            var_name='feature', # value: d0, d1, d2, d3
+                            value_name='value') # contain value of [d0, d1, d2, d3]
+        df_melted.set_index('index', inplace=True, drop=False)
+        # merge original num_fields into df_melted for displaying
+        df_melted = df_melted.join(org_df, how='left')
+        fig = px.line_polar(df_melted, r='value', theta='feature', color='index', line_close=True, hover_data=num_fields)
 
         # mean
         fig.add_trace(go.Scatterpolar(
@@ -1020,13 +1135,15 @@ def plt_stat_outlier(cfg, df, fields):
     elif dim == 3:
         fig = px.scatter_3d(vis_df, x='d0', y='d1', z='d2', size=[5]*len(vis_df), color=vis_df['type'], size_max=10, opacity=1,
                             color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                            category_orders={'type': ['inner', 'outlier']}, title=title, labels=labels)
+                            category_orders={'type': ['inner', 'outlier']}, labels=labels,
+                            hover_data=num_fields)
     else:
-        fig = px.scatter(vis_df, x='d0', y='d1', color='type', title=title, labels=labels,
+        fig = px.scatter(vis_df, x='d0', y='d1', color='type', labels=labels,
                          color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                         category_orders={'type': ['inner', 'outlier']}, hover_name='index')
+                         category_orders={'type': ['inner', 'outlier']}, hover_name='index',
+                         hover_data=num_fields)
 
-    fig.update_layout(legend_title_text='', legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
+    fig.update_layout(title=title, legend_title_text='', legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
     return fig
 
 
@@ -1176,9 +1293,9 @@ def plt_dist_ridge(cfg, df, fields):
 
 
 """
-calculate the frequency of categorical fields
+calculate data volume by categorical fields
 """
-def plt_dist_freq(cfg, df, fields):
+def plt_dist_volume(cfg, df, fields):
     num_col = 2
     row_h = 400
     cat_fields = [field for field in fields if field['attr'] == 'cat']
@@ -1209,7 +1326,7 @@ def plt_dist_freq(cfg, df, fields):
         if pct:
             cat_df['pct'] = round(100*cat_df['count']/cat_df['count'].sum(), 1)
             if cfg.get('funnel'):
-                fig.add_trace(go.Funnel(x=cat_df['count'], y=cat_df[name], name=name, textinfo='percent total'),
+                fig.add_trace(go.Funnel(x=cat_df['count'], y=cat_df[name], name=name, texttemplate = "%{percentTotal:.1%}",),
                               (idx // num_col) + 1, (idx % num_col) + 1)
             else:
                 fig.add_trace(go.Bar(x=cat_df[name], y=cat_df['count'], name=name, text=cat_df['pct'].astype(str) + '%'),
@@ -1221,12 +1338,12 @@ def plt_dist_freq(cfg, df, fields):
             else:
                 fig.add_trace(go.Bar(x=cat_df[name], y=cat_df['count'], name=name, text=cat_df['count']),
                               (idx // num_col) + 1, (idx % num_col) + 1)
-        fig.layout.annotations[idx].text = '{} ({})'.format(name, len(cat_df))
+        fig.layout.annotations[idx].text = f'{name} ({len(cat_df)})'
     if cfg.get('funnel'):
         # avoid float on y axes
         fig.update_yaxes(type='category')
 
-    fig.update_layout(height=row_h*num_row, showlegend=False, hovermode='x', barmode='stack')
+    fig.update_layout(title='Data volume by category', height=row_h*num_row, showlegend=False, hovermode='x', barmode='stack')
     return fig
 
 
@@ -1317,9 +1434,11 @@ def plt_corr_scatters(cfg, df, fields):
     num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
                   [field['name'] for field in fields if field['attr'] == 'disc']
 
+    title = 'Scatter matrix'
     cat = None
     if cfg.get('cf'):
         cat = cfg['cf']
+        title += f', Category field: {cat}'
         if df[cat].dtype == 'category':
             for ele in fields:
                 # find target unique values
@@ -1332,7 +1451,7 @@ def plt_corr_scatters(cfg, df, fields):
 
     fig = px.scatter_matrix(df, dimensions=num_fields, color=cat)
     fig.update_traces(showupperhalf=False, diagonal_visible=False)
-    fig.update_layout(legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
+    fig.update_layout(title=title, legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
     return fig
 
 
@@ -1397,7 +1516,8 @@ def plt_corr_ccm(cfg, df, fields):
     fig.add_trace(go.Heatmap(z=viz_corr, x=viz_corr.columns, y=viz_corr.index,
                              hoverinfo="none", colorscale=px.colors.diverging.RdBu, text=viz_corr.values,
                              texttemplate="%{text}", zmin=-1, zmax=1, ygap=1, xgap=1))
-    fig.update_layout(xaxis_showgrid=False, yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
+    fig.update_layout(title=f'Correlation coefficient matrix, coeff: {coeff}', xaxis_showgrid=False,
+                      yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
     return fig
 
 """
@@ -1420,7 +1540,7 @@ def plt_corr_cov(cfg, df, fields):
     fig.add_trace(go.Heatmap(z=viz_corr, x=viz_corr.columns, y=viz_corr.index,
                              hoverinfo="none", colorscale=px.colors.diverging.RdBu, text=viz_corr.values,
                              texttemplate="%{text}", zmin=-1, zmax=1, ygap=1, xgap=1))
-    fig.update_layout(xaxis_showgrid=False, yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
+    fig.update_layout(title='Covariance matrix', xaxis_showgrid=False, yaxis_showgrid=False, yaxis_autorange='reversed', template='plotly_white')
     return fig
 
 
@@ -1523,6 +1643,8 @@ def plt_corr_corr(cfg, df, fields):
         method = cfg['method']
     if cfg.get('num_only'):
         num_only = cfg['num_only']
+
+    title = f'Correlation coefficient matrix, type: {method}'
     if cfg.get('field'):
         t_field = cfg['field']
         corrs = df.drop(columns=[t_field]).corrwith(df[t_field], method=method, numeric_only=num_only).abs()
@@ -1533,7 +1655,8 @@ def plt_corr_corr(cfg, df, fields):
         fig.update_layout(title='Correlation between features and target (' + t_field + ')',
                           xaxis_title='', yaxis_title='', width=1400, height=800,
                           showlegend=False, hovermode=False)
-
+    else:
+        fig.update_layout(title=title)
     return fig
 
 
