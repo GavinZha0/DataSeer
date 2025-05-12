@@ -320,13 +320,24 @@ class DataLoader:
 
         # process missing value
         missing_values = ["n/a", "na", "--"]
-        miss_fields = [it for it in fields if it.get('miss')]
+        # get fields which has missing config
+        if self.dataset_info.transform and self.dataset_info.transform.get('miss'):
+            miss_fields = fields
+        else:
+            miss_fields = [it for it in fields if it.get('miss')]
         for it in miss_fields:
             field_name = it['name']
             if df[field_name].isnull().any():
                 # mean, most_frequent, constant (fill_value)
                 # preprocessor = raypp.SimpleImputer(columns=[field_name], strategy="mean", fill_value=None)
-                match it['miss']:
+                # get the method from field config or global config
+                if it.get('miss'):
+                    # high priority is field config
+                    miss_operation = it['miss']
+                else:
+                    miss_operation = self.dataset_info.transform.get('miss')
+
+                match miss_operation:
                     case 'drop':
                         # drop the row when this field has na
                         df.dropna(subset=[it['name']], inplace=True)
@@ -342,13 +353,17 @@ class DataLoader:
                         df[field_name] = df[field_name].fillna(df[field_name].max())
                     case 'prev':
                         df[field_name] = df[field_name].ffill()
+                        df[field_name] = df[field_name].bfill()
                     case 'next':
                         df[field_name] = df[field_name].bfill()
+                        df[field_name] = df[field_name].ffill()
                     case 'zero':
                         df[field_name] = df[field_name].fillna(value=0)
                     case '_':
                         # assigned value
-                        df[field_name] = df[field_name].fillna(it['miss'])
+                        # df[field_name] = df[field_name].fillna(it['miss'])
+                        # do nothing
+                        aaa = 1
 
         # timeseries resample
         resample_fields = [it for it in fields if it.get('timeline') and it.get('resample')]
@@ -369,10 +384,21 @@ class DataLoader:
             df = df.reset_index()
 
         # encoding
-        encode_fields = [it for it in fields if it.get('encode')]
+        if self.dataset_info.transform and self.dataset_info.transform.get('encode'):
+            encode_fields = fields
+        else:
+            encode_fields = [it for it in fields if it.get('encode')]
+
         for it in encode_fields:
             field_name = it['name']
-            match it['encode']:
+            # get the method from field config or global config
+            if it.get('encode'):
+                # high priority is field config
+                encode_operation = it['encode']
+            else:
+                encode_operation = self.dataset_info.transform.get('encode')
+
+            match encode_operation:
                 case 'ordinal':  # Ordinal
                     if it.get('target'):
                         # encode it to index based on unique values
@@ -399,10 +425,25 @@ class DataLoader:
                     df[field_name] = pp.LabelEncoder().fit_transform(df[field_name])
 
         # scaling
-        scale_fields = [it for it in fields if it.get('scale')]
+        if self.dataset_info.transform and self.dataset_info.transform.get('scale'):
+            scale_fields = fields
+        else:
+            scale_fields = [it for it in fields if it.get('scale')]
+
         for it in scale_fields:
             field_name = it['name']
-            match it['scale']:
+            if pd.api.types.is_numeric_dtype(df[field_name].dtype) is False:
+                # non-numeric field will be skipped
+                continue
+
+            # get the method from field config or global config
+            if it.get('scale'):
+                # high priority is field config
+                scale_operation = it['scale']
+            else:
+                scale_operation = self.dataset_info.transform.get('scale')
+
+            match scale_operation:
                 case 'std':
                     # mean = 0, stddev = 1
                     df[[field_name]] = pp.StandardScaler().fit_transform(df[[field_name]])

@@ -74,7 +74,7 @@ async def exe_dataset(req: schema.DatasetGetOne, auth: Auth = Depends(AllUserAut
     src_info = await dm_crud.DatasourceDal(auth.db).get_data(dataset_info.sourceId)
 
     # initialize data loader and load data
-    loader = DataLoader(src_info)
+    loader = DataLoader(src_info, dataset_info)
     df = await loader.load(dataset_info.content, dataset_info.variable)
     if df is None:
         return SuccessResponse({'total': 0, 'records': [], 'stat': {}})

@@ -2,8 +2,7 @@ import base64
 import zlib
 import pandas as pd
 from apps.ml.eda.chart_plotly import plt_stat_chart, plt_dist_chart, plt_corr_chart, \
-    plt_feature_chart, plt_reduction_chart, plt_ts_chart
-
+    plt_feature_chart, plt_reduction_chart, plt_ts_chart, plt_clustering_chart
 
 """
 return plotly config
@@ -25,6 +24,9 @@ async def eda_build_chart(tier: str, kind: str, config, df: pd.DataFrame, fields
         case 'corr':
             # Correlation group
             fig = plt_corr_chart(kind, config, df, valid_f)
+        case 'clustering':
+            # Clustering algorithms
+            fig = plt_clustering_chart(kind, config, df, valid_f)
         case 'feature':
             # Feature group
             resp['type'] = 'data'

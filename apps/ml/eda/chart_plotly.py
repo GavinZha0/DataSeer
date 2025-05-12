@@ -1,9 +1,11 @@
 import math
+from collections import Counter
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import shap
 import torch
 import umap
 from gluonts.dataset.common import ListDataset
@@ -14,13 +16,14 @@ from minisom import MiniSom
 from pyod.models import vae, dif, ecod, ae1svm, deep_svdd
 from pyod.models.knn import KNN
 from sklearn import manifold
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN, KMeans
 from sklearn.decomposition import PCA, KernelPCA, FastICA, TruncatedSVD
 from plotly.subplots import make_subplots
 import plotly.figure_factory as ff
 from scipy import stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from sktime.clustering.k_means import TimeSeriesKMeans
 from sktime.forecasting.timesfm_forecaster import TimesFMForecaster
 from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
 from statsmodels.tsa.api import STL
@@ -45,6 +48,7 @@ from apps.ml.eda.feature_select import feature_corr_filter, feature_model_eval, 
 from statsmodels.tsa.arima.model import ARIMA
 from sktime.forecasting.fbprophet import Prophet
 import ruptures as rpt
+from scipy.stats import chi2
 
 """
 build chart of statistics
@@ -142,6 +146,24 @@ def plt_corr_chart(kind, config, df, fields):
 
     return fig
 
+"""
+build chart of clustering
+"""
+def plt_clustering_chart(kind, config, df, fields):
+    # generate chart based on kind
+    match kind:
+
+        case 'kmeans':
+            # single scatter with margins
+            fig = plt_cluster_kmeans(config, df, fields)
+        case 'dbscan':
+            # scatter matrix
+            fig = plt_cluster_kmeans(config, df, fields)
+        case _:
+            # do nothing
+            fig = None
+
+    return fig
 
 """
 dim reduction chart
@@ -183,7 +205,7 @@ def plt_reduction_chart(kind, config, df, fields):
         metric = config['metric']
 
     title = None
-    labels = {str(i): kind.upper() + f"{i}" for i in range(dim)}
+    labels = {f'd{i}': kind.upper() + f"d{i}" for i in range(dim)}
 
     # only numerical columns
     f_df = f_df.select_dtypes(include='number')
@@ -212,7 +234,7 @@ def plt_reduction_chart(kind, config, df, fields):
                 total_var_pct = pca.explained_variance_ratio_.sum() * 100
                 title = f'Total Explained Variance: {total_var_pct:.2f}%'
                 labels = {
-                    str(i): f"PCA{i} ({var:.1f}%)"
+                    f'd{i}': f"d{i} ({var:.1f}%)"
                     for i, var in enumerate(pca.explained_variance_ratio_ * 100)
                 }
         case 'ica':
@@ -288,7 +310,7 @@ def plt_reduction_chart(kind, config, df, fields):
             total_var_pct = pca.explained_variance_ratio_.sum() * 100
             title = f'Total Explained Variance: {total_var_pct:.2f}%'
             labels = {
-                str(i): f"LDA{i} ({var:.1f}%)"
+                f'd{i}': f"d{i} ({var:.1f}%)"
                 for i, var in enumerate(pca.explained_variance_ratio_ * 100)
             }
         case 'autocode':
@@ -317,28 +339,75 @@ def plt_reduction_chart(kind, config, df, fields):
             # do nothing
             return None
 
-    # convert 2 dim array to dataframe
-    dim_df = pd.DataFrame(data)
-    # add target field
-    # dim_df[target_field] = df[target_field]
-    dim_df = pd.concat([dim_df, df], axis=1)
+    # get data center
+    center = np.mean(data, axis=0)
+
+    # add 2 or 3 dim data to original dataset
+    dim_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
+    df = pd.concat([df, dim_df], axis=1)
+    vis_cols = dim_df.columns.tolist()
+
+    # tooltip title
+    df.reset_index(inplace=True)
+    hover_name = config.get('label', 'index')
     num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
+    hover_data = num_fields
 
     if t_values and df[cat].dtype == 'category':
         # replace codes to category names
-        dim_df[cat] = dim_df[cat].cat.rename_categories(t_values)
+        df[cat] = df[cat].cat.rename_categories(t_values)
 
     if dim == 1:
-        fig = px.scatter(x=dim_df.index, y=dim_df[0], color=None if cat is None else dim_df[cat],
-                         labels=labels, title=title, hover_data=num_fields)
+        fig = px.scatter(x=df.index, y=df['d0'], color=None if cat is None else dim_df[cat],
+                         labels=labels, title=title, hover_name=hover_name, hover_data=num_fields)
+        # add center point
+        fig.add_trace(go.Scatter(x=[center[0]], name='Center', mode='markers',
+                                 marker=dict(color='black', size=10, symbol='x')))
+
     elif dim == 2:
-        fig = px.scatter(dim_df, x=0, y=1, color=None if cat is None else dim_df[cat],
-                         labels=labels, title=title, hover_data=num_fields)
+        fig = px.scatter(df, x='d0', y='d1', color=None if cat is None else dim_df[cat],
+                         labels=labels, title=title, hover_name=hover_name)
+        # add center point
+        fig.add_trace(go.Scatter(x=[center[0]], y=[center[1]], name='Center', mode='markers',
+                                 marker=dict(color='black', size=10, symbol='x')))
+
+        if config.get('threshold'):
+            # 计算协方差矩阵及其逆矩阵
+            cov_matrix = np.cov(data, rowvar=False)
+            inv_cov_matrix = np.linalg.inv(cov_matrix)
+            # 计算每个点到数据中心的马氏距离
+            diff = data - center
+            mahal_dist = np.sqrt(np.einsum('ij, ij -> i', diff.dot(inv_cov_matrix), diff))
+            # 根据卡方分布选择阈值，假设我们想要保留97.5%的样本
+            threshold = chi2.ppf(config['threshold'], df=data.shape[1])
+            # 获取特征值和特征向量
+            eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+            # 计算半长轴和半短轴
+            semi_major_axis = np.sqrt(threshold * eigenvalues[1])
+            semi_minor_axis = np.sqrt(threshold * eigenvalues[0])
+            # 计算椭圆的角度
+            angle = np.degrees(np.arctan2(eigenvectors[1, 1], eigenvectors[0, 1]))
+            # 生成椭圆上的点
+            theta = np.linspace(0, 2 * np.pi, 100)
+            ellipse_x = semi_major_axis * np.cos(theta)
+            ellipse_y = semi_minor_axis * np.sin(theta)
+            # 旋转并平移椭圆到正确的位置
+            R = np.array([[np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
+                          [np.sin(np.radians(angle)), np.cos(np.radians(angle))]])
+            rotated_ellipse = np.dot(np.array([ellipse_x, ellipse_y]).T, R)
+            final_ellipse_x, final_ellipse_y = rotated_ellipse[:, 0] + center[0], rotated_ellipse[:, 1] + center[1]
+            # 添加椭圆
+            fig.add_trace(
+                go.Scatter(x=final_ellipse_x, y=final_ellipse_y, mode='lines', name='MD boundary', line=dict(color='red')))
+
     elif dim == 3:
-        fig = px.scatter_3d(dim_df, x=0, y=1, z=2, size=[5]*len(dim_df), size_max=10, labels=labels, title=title,
-                            color=None if cat is None else dim_df[cat], hover_data=num_fields)
+        fig = px.scatter_3d(df, x='d0', y='d1', z='d2', size=[5]*len(dim_df), size_max=10, labels=labels, title=title,
+                            color=None if cat is None else dim_df[cat], hover_name=hover_name)
+        # add center point
+        fig.add_trace(go.Scatter(x=[center[0]], y=[center[1]], z=[center[2]], name='Center', mode='markers',
+                                 marker=dict(color='black', size=10, symbol='x')))
     else:
-        fig = go.Figure(go.Table(header=dict(values=[kind + f'{i}' for i in range(dim)]),
+        fig = go.Figure(go.Table(header=dict(values=[kind + f'd{i}' for i in range(dim)]),
                                  cells=dict(values=np.transpose(np.round(data, 3)))))
     return fig
 
@@ -441,6 +510,9 @@ def plt_ts_chart(kind, config, df, fields):
         case 'anomaly':
             # anomaly detection
             fig = plt_ts_anomaly(ts_field, config, df, fields)
+        case 'similarity':
+            # similarity detection
+            fig = plt_ts_similarity(ts_field, config, df, fields)
         case 'anc':
             # active noice reduction
             fig = plt_ts_anc(ts_field, config, df, fields)
@@ -804,6 +876,7 @@ def plt_stat_outlier(cfg, df, fields):
     target_field = [field['name'] for field in fields if 'target' in field]
     feature_fields = list(set(valid_fields).difference(set(target_field)))
     num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc') and 'target' not in field]
+    cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
     fig = go.Figure()
 
     method = 'quantile'
@@ -847,7 +920,7 @@ def plt_stat_outlier(cfg, df, fields):
             if num_row == 0:
                 return None
             fig = make_subplots(rows=num_row, cols=num_col,
-                                subplot_titles=['{} ({})'.format(n, outers[n].count()) for n in outers.columns],
+                                subplot_titles=[f'{n} ({outers[n].count()}/{len(df)})' for n in outers.columns],
                                 row_heights=[400 for n in range(num_row)],
                                 horizontal_spacing=0.05, vertical_spacing=0.2 / num_row)
             for idx, name in enumerate(outers):
@@ -862,7 +935,7 @@ def plt_stat_outlier(cfg, df, fields):
                 #                      marker=dict(outliercolor='#db4052')),
                 #               (idx // num_col) + 1, (idx % num_col) + 1)
             fig.update_xaxes(type='category')
-            fig.update_layout(height=num_row * 400, showlegend=False)
+            fig.update_layout(title=f'Method: {method}, abnormal features: {len(outers.columns)}', height=num_row * 400, showlegend=False)
             return fig
         case 'zscore':
             # distribution-based
@@ -889,7 +962,7 @@ def plt_stat_outlier(cfg, df, fields):
                 return None
 
             fig = make_subplots(rows=num_row, cols=num_col,
-                                subplot_titles=['{} ({})'.format(n, outers[n].count()) for n in outers.columns if n != 'type'],
+                                subplot_titles=[f'{n} ({outers[n].count()}/{len(df)})' for n in outers.columns if n != 'type'],
                                 row_heights=[400 for n in range(num_row)],
                                 horizontal_spacing=0.05, vertical_spacing=0.2 / num_row)
             for idx, name in enumerate(outers.columns):
@@ -943,6 +1016,7 @@ def plt_stat_outlier(cfg, df, fields):
             clf = DBSCAN(eps=radius, min_samples=min_s, metric=metric)
             clf.fit(df[num_fields])
             y_pred = [1 if i < 0 else 0 for i in clf.labels_]
+            df['outlier'] = y_pred
         case 'svm':
             kernel = 'rbf'
             if cfg.get('kernel'):
@@ -953,6 +1027,18 @@ def plt_stat_outlier(cfg, df, fields):
             clf = OCSVM(nu=0.5, contamination=cont_ratio, kernel=kernel)
             clf.fit(df[num_fields])
             y_pred = clf.labels_
+            df['outlier'] = y_pred
+
+            # 提取异常点（ocsvm_anomaly == 1）
+            anomaly = df[df['outlier'] != 0]
+            background_data = shap.sample(df[num_fields], 100)
+            # 使用 KernelExplainer（适用于 OCSVM）
+            explainer = shap.KernelExplainer(clf.decision_function, background_data)
+            shap_values = explainer.shap_values(df[num_fields], nsamples=100)
+            shap_ocsvm_df = pd.DataFrame(shap_values, columns=num_fields, index=df.index)
+            shap_anomalies = shap_ocsvm_df.loc[anomaly.index]
+            df['suspect'] = shap_anomalies.abs().idxmax(axis=1)
+            df['suspect'] = df['suspect'].fillna('')
         case 'knn':
             #  K-Nearest Neighbors (distance-based)
             # ['braycurtis', 'canberra', 'chebyshev',
@@ -967,6 +1053,7 @@ def plt_stat_outlier(cfg, df, fields):
             clf.fit(df[num_fields])
             # 1: outlier
             y_pred = clf.labels_
+            df['outlier'] = y_pred
         case 'lof':
             # Local Outlier Factor(局部利群因子, density-based)
             # ['braycurtis', 'canberra', 'chebyshev',
@@ -977,12 +1064,14 @@ def plt_stat_outlier(cfg, df, fields):
             cont_ratio = threshold if threshold else 0.03
             clf = LOF(contamination=cont_ratio, n_neighbors=10, metric=metric)
             y_pred = clf.fit_predict(df[num_fields])
+            df['outlier'] = y_pred
         case 'cof':
             # Connectivity-Based Outlier Factor (COF, LOF的变种, density-based)
             cont_ratio = threshold if threshold else 0.03
             clf = COF(contamination=cont_ratio, n_neighbors=15)
             clf.fit(df[num_fields])
             y_pred = clf.predict(df[num_fields])
+            df['outlier'] = y_pred
         case 'iforest':
             # Isolation Forest(孤立森林, tree-based)
             # unsupervised, global outlier detection
@@ -991,7 +1080,20 @@ def plt_stat_outlier(cfg, df, fields):
             cont_ratio = threshold if threshold else 0.03
             clf = IForest(contamination=cont_ratio, n_estimators=100, max_samples='auto')
             clf.fit(df[num_fields])
-            y_pred = clf.predict(df[num_fields])
+            y_pred = clf.labels_
+            df['outlier'] = y_pred
+            # use shap to explain the outliers
+            anomaly = df[df['outlier'] != 0]
+            explainer = shap.TreeExplainer(clf)
+            shap_values = explainer.shap_values(df[num_fields])
+            shap_df = pd.DataFrame(
+                shap_values[anomaly.index],
+                index=anomaly.index,
+                columns=num_fields
+            )
+            shap_anomalies = shap_df.loc[anomaly.index]
+            df['suspect'] = shap_anomalies.abs().idxmax(axis=1)
+            df['suspect'] = df['suspect'].fillna('')
         case 'som':
             # self-organizing map(自组织映射算法)
             # 是一种无监督学习算法，用于对高维数据进行降维和聚类分析
@@ -1012,7 +1114,7 @@ def plt_stat_outlier(cfg, df, fields):
             # z_scores = np.abs(stats.zscore(quantization_errors))
             # is_outlier = z_scores > 3
             # y_pred = is_outlier.astype(int)
-
+            df['outlier'] = y_pred
         case 'vae':
             # AutoEncoder(自编码器, unsupervised, neural network)
             epoch = cfg.get('epoch', 1)
@@ -1026,6 +1128,7 @@ def plt_stat_outlier(cfg, df, fields):
             auto_encoder.fit(df[num_fields])
             # 1: outlier
             y_pred = auto_encoder.predict(df[num_fields])
+            df['outlier'] = y_pred
         case '_':
             return fig
 
@@ -1039,10 +1142,9 @@ def plt_stat_outlier(cfg, df, fields):
             y_df = pd.DataFrame(df[num_fields[0]]*y_pred)
             y_df = y_df[y_df[num_fields[0]]>0]
             fig.add_trace(go.Scatter(x=df.index, y=df[num_fields[0]], name=num_fields[0], hovertemplate='%{y}<extra></extra>'))
-            fig.add_trace(go.Scatter(x=y_df.index, y=y_df[num_fields[0]], name='outlier', line=dict(color="#ff0000"),
+            fig.add_trace(go.Scatter(x=y_df.index, y=y_df[num_fields[0]], name='outlier', marker=dict(color="red"),
                                      mode='markers', hovertemplate='%{y}<extra></extra>'))
-            fig.update_layout(hovermode='x')
-            fig.update_layout(title=f'total outliers: {len(y_df)}', hovermode='x')
+            fig.update_layout(title=f'Outliers: {sum(y_pred)}/{len(y_df)}', hovermode='x')
         return fig
     else:
         dim = min(dim, len(num_fields))
@@ -1064,14 +1166,30 @@ def plt_stat_outlier(cfg, df, fields):
             for i, var in enumerate(pca.explained_variance_ratio_ * 100)
         }
 
-    vis_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
-    vis_cols = vis_df.columns.tolist()
-    vis_df['type'] = ['inner' if i == 0 else 'outlier' for i in y_pred]
-    vis_df = pd.concat([df, vis_df], axis=1)
-    vis_df.reset_index(inplace=True)
-    title = f'Method: {method}, Outliers: {sum(y_pred)}'
-    # discrete color
-    # cmap = [[((i + 1) // 2) / 2, px.colors.qualitative.Plotly[i // 2]] for i in range(2 * 2)]
+    # add pca data to original dataset
+    pca_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
+    df = pd.concat([df, pca_df], axis=1)
+    vis_cols = pca_df.columns.tolist()
+    # point type: inner or outlier for displaying
+    df['point_type'] = df['outlier'].map({0: 'inner', 1: 'outlier'})
+    # reset index for label displaying
+    df.reset_index(inplace=True)
+    title = f'Method: {method}, Outliers: {sum(y_pred)}/{len(y_pred)}'
+
+    # tooltip title
+    hover_name = cfg.get('label', 'index')
+    hover_data = num_fields
+    if 'suspect' in df.columns:
+        # show suspect field on tooltip
+        hover_data.append('suspect')
+    df['label_text'] = ''
+    if cfg.get('label') is not None:
+        # show outlier's label on scatter plot
+        df['label_text'] = df[hover_name].astype(str).where(df['outlier'] != 0, '')
+        if 'suspect' in df.columns:
+            # combin column name
+            df['label_text'] = df.apply(lambda row: row['label_text'] + f"({row['suspect']})" if row['suspect'] != '' else row['label_text'], axis=1)
+
     if dim > 3:
         mean_v = np.mean(data, axis=0)
         std_v = np.std(data, axis=0)
@@ -1092,7 +1210,7 @@ def plt_stat_outlier(cfg, df, fields):
         th_lower = th_lower + np.array(off_set)
 
         # outliers
-        out_df = vis_df[vis_df['type'] == 'outlier']
+        out_df = df[df['outlier'] != 0]
         org_df = out_df[num_fields]
         out_df[vis_cols] = out_df[vis_cols] + pd.Series(mean_v, index=vis_cols)
         df_melted = pd.melt(out_df,
@@ -1103,7 +1221,8 @@ def plt_stat_outlier(cfg, df, fields):
         df_melted.set_index('index', inplace=True, drop=False)
         # merge original num_fields into df_melted for displaying
         df_melted = df_melted.join(org_df, how='left')
-        fig = px.line_polar(df_melted, r='value', theta='feature', color='index', line_close=True, hover_data=num_fields)
+        fig = px.line_polar(df_melted, r='value', theta='feature', color='index', line_close=True,
+                            hover_data=num_fields, hover_name=hover_name)
 
         # mean
         fig.add_trace(go.Scatterpolar(
@@ -1119,7 +1238,7 @@ def plt_stat_outlier(cfg, df, fields):
             theta=vis_cols + [vis_cols[0]],
             fill='toself',
             fillcolor='rgba(0,100,80,0.2)',
-            line=dict(color='rgba(0,0,0,0)'),  # 隐藏边线
+            line=dict(color='rgba(0,0,0,0)'),
             name='99%'
         ))
 
@@ -1128,21 +1247,22 @@ def plt_stat_outlier(cfg, df, fields):
             r=th_lower.tolist() + [th_lower[0]],
             theta=vis_cols + [vis_cols[0]],
             fill='toself',
-            fillcolor='rgba(255,255,255,1)',     # 白色填充覆盖下层
-            line=dict(color='rgba(0,0,0,0)'),  # 隐藏边线
+            fillcolor='rgba(255,255,255,1)',
+            line=dict(color='rgba(0,0,0,0)'),
             name=''
         ))
     elif dim == 3:
-        fig = px.scatter_3d(vis_df, x='d0', y='d1', z='d2', size=[5]*len(vis_df), color=vis_df['type'], size_max=10, opacity=1,
-                            color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                            category_orders={'type': ['inner', 'outlier']}, labels=labels,
-                            hover_data=num_fields)
+        fig = px.scatter_3d(df, x='d0', y='d1', z='d2', size=[5]*len(df), color=df['point_type'], size_max=10, opacity=1,
+                            color_discrete_map={'inner': "rgba(0, 204, 150, 0.7)", 'outlier': 'rgba(255, 0, 0, 1)'},
+                            category_orders={'outlier': [0, 1]}, labels=labels,
+                            hover_data=hover_data, hover_name=hover_name)
     else:
-        fig = px.scatter(vis_df, x='d0', y='d1', color='type', labels=labels,
-                         color_discrete_map={"inner": "#00CC96", "outlier": "#EF553B"},
-                         category_orders={'type': ['inner', 'outlier']}, hover_name='index',
-                         hover_data=num_fields)
+        fig = px.scatter(df, x='d0', y='d1', color='point_type', labels=labels, text='label_text',
+                         color_discrete_map={'inner': "rgba(0, 204, 150, 0.5)", 'outlier': 'rgba(255, 0, 0, 1)'},
+                         category_orders={'outlier': [0, 1]}, hover_name=hover_name,
+                         hover_data=hover_data)
 
+    fig.update_traces(textposition="bottom center")
     fig.update_layout(title=title, legend_title_text='', legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
     return fig
 
@@ -1402,6 +1522,8 @@ def plt_corr_scatter(cfg, df, fields):
         frac = cfg['frac']
         trend = 'lowess'
 
+    xerror = cfg.get('xerror')
+    yerror = cfg.get('yerror')
     cat = None
     if cfg.get('cf'):
         cat = cfg['cf']
@@ -1416,14 +1538,17 @@ def plt_corr_scatter(cfg, df, fields):
                     break
 
     if cat:
+        # sort by category
+        df.sort_values(by=cat, inplace=True, key=lambda x: x.str.lower())
         # category by colors
-        fig = px.scatter(df, x=xf, y=yf, color=cfg['cf'], trendline=trend, trendline_scope="overall",
-                         trendline_options=dict(frac=frac), facet_row=facet, marginal_x=marg, marginal_y=marg)
+        fig = px.scatter(df, x=xf, y=yf, color=cat, trendline=trend, trendline_scope="overall",
+                         trendline_options=dict(frac=frac), facet_row=facet, marginal_x=marg, marginal_y=marg,
+                         error_x=xerror, error_y=yerror)
     else:
         fig = px.scatter(df, x=xf, y=yf, trendline=trend, trendline_options=dict(frac=frac),
-                         facet_row=facet, marginal_x=marg, marginal_y=marg)
+                         facet_row=facet, marginal_x=marg, marginal_y=marg, error_x=xerror, error_y=yerror)
 
-    fig.update_layout(legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
+    fig.update_layout(title=f'Scatter plot ({xf} X {yf})', legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
     return fig
 
 
@@ -1482,7 +1607,7 @@ def plt_corr_pair(cfg, df, fields):
 
     if len(pair_fields) > 1:
         fig = ff.create_scatterplotmatrix(df[pair_fields], diag=box, index=cat)
-        fig.update_layout(title='', width=1400, height=700)
+        fig.update_layout(title='Pair plot', width=1600, height=800)
         return fig
     else:
         return None
@@ -1494,8 +1619,8 @@ CCM: Correlation Coefficient Matrix
 """
 def plt_corr_ccm(cfg, df, fields):
     # 相关系数也可以看成协方差：一种剔除了两个变量量纲影响、标准化后的特殊协方差。
-    # Pearson 系数用来检测两个连续型变量之间线性相关程度，要求这两个变量分别分布服从正态分布；
-    # Spearman系数不假设连续变量服从何种分布，如果是顺序变量(Ordinal)，推荐使用Spearman。
+    # Pearson 系数用来检测两个连续型变量之间线性相关程度，要求这两个变量分别分布服从正态分布；仅检测线性关系,容易受异常值影响
+    # Spearman系数不假设连续变量服从何种分布，如果是顺序变量(Ordinal)，推荐使用Spearman。不要求正态分布,对异常值不敏感,捕捉单调非线性关系
     # Kendall 用于检验连续变量和类别变量间的相关性
     # 卡方检验(Chi-squared Test)，检验类别变量间的相关性
     num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
@@ -1548,8 +1673,7 @@ def plt_corr_cov(cfg, df, fields):
 Parallel curves
 """
 def plt_corr_parallel(cfg, df, fields):
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
     # cfg['group'] = 'disc'  # disc or conti
     # map target fields to discrete colors
     cat = None
@@ -1581,8 +1705,7 @@ def plt_corr_parallel(cfg, df, fields):
 Andrews curve
 """
 def plt_corr_andrews(cfg, df, fields):
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
 
     fig = go.Figure()
     cat = 'fake_cat'
@@ -1660,6 +1783,95 @@ def plt_corr_corr(cfg, df, fields):
     return fig
 
 
+"""
+clustering detection
+K-Means
+"""
+def plt_cluster_kmeans(cfg, df, fields):
+    valid_fields = [field for field in fields if 'omit' not in field]
+    target_field = [field['name'] for field in valid_fields if 'target' in field]
+    num_fields = [field['name'] for field in valid_fields if field['attr'] in ('conti', 'disc') and 'target' not in field]
+    cat_fields = [field['name'] for field in valid_fields if field['attr'] == 'cat']
+    fig = go.Figure()
+
+    method = cfg.get('method', 'kmeans')
+    n_clusters = cfg.get('clusters', 2)
+    max_iter = cfg.get('iterations', 300)
+    tol = cfg.get('tol', 0.0001)
+    disp = cfg.get('disp', 'pca')
+    metric = cfg.get('metric', 'euclidean')
+
+    cluster_ids = None
+    match method:
+        case 'dbscan':
+            # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
+            #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
+            #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
+            #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
+            # 'minkowski' does not work
+            radius = 0.5
+            min_s = cfg['min_samples'] if cfg.get('min_samples') else 5
+            clst = DBSCAN(eps=radius, min_samples=min_s, metric=metric)
+            clst.fit(df[num_fields])
+            cluster_ids = clst.labels_
+        case 'kmeans':
+            clst = KMeans(n_clusters=n_clusters, init='k-means++', max_iter=max_iter, tol=tol)
+            clst.fit(df[num_fields])
+            cluster_ids = clst.labels_
+        case '_':
+            return fig
+
+    # display clusters by t-SNE
+    dim = cfg.get('dim', 2)
+    labels = None
+    # visualization solution
+    if disp == 'tsne':
+        # t-distributed Stochastic Neighbor Embedding
+        data = manifold.TSNE(n_components=dim, metric=metric, perplexity=min(30, len(df)-1)).fit_transform(df[num_fields])
+    else:
+        # PCA (Principal Component Analysis)
+        pca = PCA(n_components=dim)
+        data = pca.fit_transform(df[num_fields])
+        labels = {
+            f'd{i}': f"PCA{i} ({var:.1f}%)"
+            for i, var in enumerate(pca.explained_variance_ratio_ * 100)
+        }
+
+    # build dataframe based on data of 2 dim (d0, d1)
+    vis_df = pd.DataFrame(data, columns=[f'd{i}' for i in range(dim)])
+    # merge vis data into original data
+    df = pd.concat([df, vis_df], axis=1)
+
+    # add cluster id
+    df['cluster'] = cluster_ids
+    # convert index to a column
+    df.reset_index(inplace=True)
+    label_cluster = cfg.get('cluster')
+    hover_name = cfg.get('label', 'index')
+    df['label_text'] = ''
+    if cfg.get('label') is not None:
+        if label_cluster is None:
+            # show labels on scatter
+            df['label_text'] = df[hover_name]
+        else:
+            # show labels on scatter plot for a specific cluster
+            df['label_text'] = df[hover_name].astype(str).where(df['cluster'] == label_cluster, '')
+    # convert cluster id to string for legend displaying
+    df['cluster'] = df['cluster'].astype(str)
+    # sort by cluster id and index for displaying (legend order)
+    df.sort_values(by=['cluster', 'index'], ascending=[True, True], inplace=True)
+    u_cids = df['cluster'].value_counts()
+    u_str = '(' + ', '.join([f"{k}:{v}" for k, v in u_cids.items()]) + ')'
+
+    # build plotly figure
+    title = f'Clustering method: {method} {u_str}'
+    fig = px.scatter(df, x='d0', y='d1', color='cluster', labels=labels, hover_name=hover_name,
+                     hover_data=num_fields+target_field, text='label_text')
+
+    fig.update_traces(textposition="bottom center")
+    fig.update_layout(title=title, legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
+    return fig
+
 
 
 
@@ -1693,8 +1905,7 @@ plt ts trending chart
 """
 def plt_ts_series(tsf, cfg, df, fields):
     fig = go.Figure()
-    v_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
+    v_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
 
     cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
 
@@ -1716,10 +1927,11 @@ def plt_ts_series(tsf, cfg, df, fields):
 
     # category field
     cat_field = cfg.get('cat')
+    gaps = cfg.get('gap', False)
 
     period = 'D'
     if cfg.get('period'):
-        ts_df, period = ts_resample(tsf, cfg, df, fields)
+        ts_df, period = ts_resample(tsf, cfg, df, fields, (not gaps))
         '''
         period = cfg['period']
         # aggregated by period (YS,QS,MS,W,D,h,min,s)
@@ -1738,6 +1950,8 @@ def plt_ts_series(tsf, cfg, df, fields):
         ts_df.reset_index(inplace=True)
         ts_df.set_index(tsf, inplace=True)
 
+
+
     if cfg.get('solo'):
         # put curves on separated charts
         rows = len(v_fields)
@@ -1749,18 +1963,26 @@ def plt_ts_series(tsf, cfg, df, fields):
         fig.update_layout(showlegend=False, height=rows * 300, hovermode='x')
     else:
         if cat_field:
-            num_cat = ts_df[cat_field].nunique()
-            if num_cat > 50:
+            if gaps:
+                # get all cat names with missing values
+                cat_values = ts_df[ts_df[v_fields].isna().any(axis=1)][cat_field].unique().astype(str)
+            else:
+                cat_values = ts_df[cat_field].unique().astype(str)
+
+            cat_values.sort()
+            curr_num = len(cat_values)
+            ts_df = ts_df[ts_df[cat_field].isin(cat_values)]
+            if curr_num > 50:
                 page = cfg['page'] if cfg.get('page') else 0
-                cat_values = ts_df[cat_field].unique()
-                cat_values.sort()
+                # sort for pages
                 cat_50 = cat_values[page*50:(page+1)*50]
                 ts_df = ts_df[ts_df[cat_field].isin(cat_50)]
+                curr_num = len(cat_50)
             ts_df.reset_index(inplace=True)
             # df.sort_values(by=[tsf, cat_field], inplace=True)
             fig = px.line(ts_df, x=tsf, y=v_fields[0], color=cat_field)
             # fig.update_layout(legend_traceorder="normal")
-            fig.update_layout(legend_title_text=f'{cat_field} ({num_cat})')
+            fig.update_layout(title=f'Time series ({curr_num}/{len(cat_values)})', legend_title_text=f'{cat_field} ({curr_num})')
         else:
             # put all curves on one chart
             [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name=nf, connectgaps=connected,
@@ -2500,7 +2722,10 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
         threshold = cfg['threshold']
 
     vf = cfg['vf']
-    df, period = ts_resample(tsf, cfg, df, fields)
+    if method == 'gaps':
+        df, period = ts_resample(tsf, cfg, df, fields, False)
+    else:
+        df, period = ts_resample(tsf, cfg, df, fields)
     y_pred = None
     match method:
         case 'quantile':
@@ -2527,9 +2752,16 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             # 3 sigma line
             th_lower = (stat.loc['mean'] - stat.loc['std'] * sigma_coff).round(3)
             th_upper = (stat.loc['mean'] + stat.loc['std'] * sigma_coff).round(3)
-            y_pred = [-1 if v<th_lower else 1 if v>th_upper else 0 for v in df[vf].values]
+            y_pred = [-1 if v < th_lower else 1 if v > th_upper else 0 for v in df[vf].values]
             th_lower = [th_lower] * len(y_pred)
             th_upper = [th_upper] * len(y_pred)
+        case 'gaps':
+            if cfg.get('cat'):
+                # get all cat names with missing values
+                cat_values = df[df[[vf]].isna().any(axis=1)][cfg.get('cat')].unique().astype(str)
+                cat_values.sort()
+                df = df[df[cfg.get('cat')].isin(cat_values)]
+            y_pred = df[[vf]].isna().any(axis=1).astype(int).tolist()
         case 'diff':
             diff_coff = threshold if threshold else 2
             diff_df = df[vf].diff(periods=1)
@@ -2638,27 +2870,53 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             return fig
 
     # two subplots
-    fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], vertical_spacing=0.07)
-    # original data line
-    fig.add_trace(go.Scatter(x=df.index, y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
+    fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], shared_xaxes=True, vertical_spacing=0.02)
+    # index is ts and ts field is column
+    df.reset_index(inplace=True)
+    # df.set_index(tsf, drop=False, inplace=True)
+    if cfg.get('cat'):
+        # build lines with category
+        px_line = px.line(df, x=tsf, y=vf, color=cfg.get('cat'))
+        # add original data lines
+        [fig.add_trace(line, 1, 1) for line in px_line.data]
+    else:
+        fig.add_trace(go.Scatter(x=df[tsf], y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
 
+    total_outliers = 0
     # outlier markers
     if len(y_pred) > 0:
-        abs_y = [abs(x) for x in y_pred]
-        outlier_df = pd.DataFrame(df[vf] * abs_y)
-        outlier_df = outlier_df[outlier_df[vf] > 0]
-        fig.add_trace(go.Scatter(x=outlier_df.index, y=outlier_df[vf], name='outlier', line=dict(color="#ff0000"),
-                                 mode='markers', hovertemplate='%{y}<extra></extra>'), 1, 1)
+        # add outlier column to df
+        df['outlier'] = y_pred
+        # filter outliers
+        outlier_df = df[df['outlier'] != 0]
+        total_outliers = len(outlier_df)
+        if method != 'gaps':
+            # add marker to original ts chart
+            fig.add_trace(go.Scatter(x=outlier_df[tsf], y=outlier_df[vf], name='outlier', mode='markers',
+                                     marker=dict(color='red')), 1, 1)
 
-        # outliers with binary index (0, 1 or -1)
-        fig.add_trace(go.Scatter(x=df.index, y=y_pred, name='binary index', hovertemplate='%{y}<extra></extra>'), 2, 1)
-        fig.update_layout(title=f'total outliers: {len(outlier_df)}', hovermode='x')
+        outlier_df = outlier_df[[tsf, 'outlier']]
+        pos_df = outlier_df[outlier_df['outlier'] > 0]
+        pos_df = pos_df.groupby(tsf).sum()
+        neg_df = outlier_df[outlier_df['outlier'] < 0]
+        neg_df = neg_df.groupby(tsf).sum()
+        alert_df = pd.concat([pos_df, neg_df])
+        if len(alert_df) > 0:
+            alert_df.reset_index(inplace=True, drop=False)
+            # outliers with binary index (0, 1 or -1)
+            fig.add_trace(go.Scatter(x=alert_df[tsf], y=alert_df['outlier'], name='alert', mode='markers',
+                                     marker=dict(color='red')), 2, 1)
+            [fig.add_shape(type="line", x0=alert_df[tsf].loc[i], y0=0, x1=alert_df[tsf].loc[i],
+                           y1=alert_df['outlier'].loc[i], line_color='gray', row=2, col=1) for i in alert_df.index]
+
+
+
 
     if method in ['quantile', 'zscore', 'diff', 'rolling']:
         # add tolerance area
-        fig.add_trace(go.Scatter(x=df.index, y=th_lower, name='lower', showlegend=False,
+        fig.add_trace(go.Scatter(x=df[tsf], y=th_lower, name='lower', showlegend=False,
                                  line=dict(color='rgba(255,228,181,0.2)', width=0, dash='dot')), 1, 1)
-        fig.add_trace(go.Scatter(x=df.index, y=th_upper, name='upper', showlegend=False, fill='tonexty',
+        fig.add_trace(go.Scatter(x=df[tsf], y=th_upper, name='upper', showlegend=False, fill='tonexty',
                                  line=dict(color='rgba(255,228,181,0.2)', width=0, dash='dot')), 1, 1)
 
     if method == 'ruptures':
@@ -2675,6 +2933,86 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             if reshaped_df is not None:
                 fig.add_trace(
                     go.Scatter(x=reshaped_df.index, y=reshaped_df[vf], name='Reshape', hovertemplate='%{y}<extra></extra>'), 2, 1)
+
+    fig.update_layout(title=f'Outliers: {total_outliers}/{len(y_pred)}, Alog: {method}')
+    return fig
+
+"""
+plt ts similarity detection chart
+{"pid": "ts", "ts": "time", "field": "dena74",  "method": "kmeans"}
+"""
+def plt_ts_similarity(tsf, cfg, df, fields):
+    fig = go.Figure()
+    if cfg.get('period') is None:
+        return fig
+
+    num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
+    method = cfg.get('method', 'kmeans')
+    metric = cfg.get('metric', 'euclidean')
+    threshold = cfg.get('threshold')
+    clusters = cfg.get('clusters', 2)
+    cluster_id = cfg.get('page', 0)
+    vf = cfg.get('vf')
+    cf = cfg.get('cat')
+
+    if cf and vf:
+        num_fields = [vf]
+        df = df[[cf, vf]]
+    elif vf:
+        num_fields = [vf]
+        df = df[[vf]]
+    elif cf:
+        selected_field = num_fields.copy()
+        selected_field.append(cf)
+        df = df[selected_field]
+    else:
+        df = df[num_fields]
+
+    # resample
+    df, period = ts_resample2(tsf, cfg, df, fields)
+    cluster_ids = None
+    match method:
+        case 'kmeans':
+            number_df = df[num_fields]
+            d3_data = number_df.values.T.reshape((len(num_fields), 1, len(df)))
+            clst = TimeSeriesKMeans(n_clusters=clusters, metric='euclidean', max_iter=500)
+            clst.fit(d3_data)
+            cluster_ids = clst.labels_
+            cluster_cnt = dict(Counter(cluster_ids))
+            cluster_dict = {}
+            for idx, cluster in enumerate(cluster_ids):
+                cluster_dict[number_df.columns[idx]] = cluster
+        case 'dbscan':
+            # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
+            #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
+            #  ‘hamming’, ‘jaccard’, ‘jensenshannon’, ‘kulczynski1’, ‘mahalanobis’, ‘matching’, ‘minkowski’,
+            #  ‘rogerstanimoto’, ‘russellrao’, ‘seuclidean’, ‘sokalmichener’, ‘sokalsneath’, ‘sqeuclidean’, ‘yule’
+            # 'minkowski' does not work
+            distance = threshold if threshold else 0.5
+            clst = DBSCAN(eps=distance, metric=metric)
+            clst.fit(df[[vf]])
+            cluster_ids = clst.labels_
+        case '_':
+            return fig
+
+    title = f'Clustering method: {method}, Clusters: {clusters}'
+
+    # convert wide table to long table
+    df.reset_index(inplace=True)
+    df_melted = pd.melt(df,
+                        id_vars=['ts'],  # keep index as id
+                        value_vars=num_fields,  # put value of these columns into one column(value_name)
+                        var_name='cat',  # contain value_vars
+                        value_name='value')  # contain value value_vars
+
+    df_melted['cluster'] = df_melted['cat'].map(cluster_dict)
+    fig = px.line(df_melted, x="ts", y="value", color="cat", facet_row="cluster")
+    fig.for_each_annotation(lambda a: a.update(text=cluster_cnt[int(a.text.split("=")[-1])]))
+
+    if clusters < 3:
+        fig.update_layout(legend_title_text=f'Cat ({len(num_fields)})', xaxis_title='')
+    else:
+        fig.update_layout(legend_title_text=f'Cat ({len(num_fields)})', xaxis_title='', height=clusters * 300)
     return fig
 
 
@@ -2760,7 +3098,7 @@ def plt_ts_anc(tsf, cfg, df, fields):
 
 
 
-def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
+def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list, fill: bool = True):
     period = cfg.get('period', None)
     if period is None:
         return df, period
@@ -2791,33 +3129,8 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
     resampled_df = None
     if cfg.get('cat'):
         cat_field = cfg['cat']
-        # get page info
-        page = cfg['page'] if cfg.get('page') else 0
-        # unique categories
-        cat_values = df[cat_field].unique()
-        # sort categories
-        if isinstance(cat_values, pd.Categorical):
-            cat_values = cat_values.categories.tolist()
-        cat_values.sort()
-        # get current page. 50 categories
-        cat_50 = cat_values[page * 50:(page + 1) * 50]
-        # filter data by cat
-        cat50_df = df[df[cat_field].isin(cat_50)]
-
-        # resample each category
-        for cat in cat_50:
-            # filter data by cat
-            cat_df = cat50_df[cat50_df[cat_field] == cat]
-            # drop cat field
-            cat_df.drop(columns=[cat_field], inplace=True)
-            # resample
-            cat_df = cat_df.resample(period).agg(agg)
-            # get cat field back
-            cat_df[cat_field] = cat
-            if resampled_df is None:
-                resampled_df = cat_df
-            else:
-                resampled_df = pd.concat([resampled_df, cat_df])
+        resampled_df = df.groupby(cat_field).resample(period).agg(agg)
+        resampled_df.reset_index(level=cat_field, drop=False, inplace=True)
     else:
         cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
         num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
@@ -2835,10 +3148,75 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
             resampled_df = pd.concat(resampled_list)
             resampled_df.sort_index(inplace=True)
 
+    if fill:
+        # value field
+        num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
+        # handle missing value
+        for field in num_fields:
+            vf = field['name']
+            if vf in resampled_df.columns and resampled_df[vf].isnull().any() and field.get('miss'):
+                match field['miss']:
+                    case 'mean':
+                        resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mean())
+                    case 'median':
+                        resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].median())
+                    case 'mode':
+                        resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mode())
+                    case 'prev':
+                        resampled_df[vf] = resampled_df[vf].ffill()
+                    case 'next':
+                        resampled_df[vf] = resampled_df[vf].bfill()
+                    case 'zero':
+                        resampled_df[vf] = resampled_df[vf].fillna(value=0)
+    return resampled_df, period
 
-    # value field
-    num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
+
+
+def ts_resample2(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
+    period = cfg.get('period', None)
+    if period is None:
+        return df, period
+
+    # aggregated by period (YS,QS,MS,W,D,h,min,s)
+    # agg: sum, mean, median, min, max, std, count
+    agg = cfg['agg'] if cfg.get('agg') else 'mean'
+    for field in fields:
+        # find config of ts field to confirm period
+        if field.get('name') == tsf and field.get('gap'):
+            period_min = 1
+            if field.get('gap'):
+                period_min = int(field['gap'])
+            resample_min = 1
+            if field.get('resample'):
+                resample_min = int(field['resample'])
+            final_period = max(period_min, resample_min)
+            if final_period < 60 and (period == 'min' or period == 's'):
+                # update period to min period of this time series
+                period = f'{final_period}T'
+                break
+            elif final_period > 60 and final_period < 1440 and (period == 'h' or period == 'min' or period == 's'):
+                # update period to min period of this time series
+                period_h = math.ceil(final_period / 60)
+                period = f'{period_h}H'
+                break
+
+
+    resampled_df = None
+    if cfg.get('cat'):
+        cat_field = cfg['cat']
+        resampled_df = df.groupby(cat_field).resample(period).agg(agg)
+        resampled_df.reset_index(level=cat_field, drop=False, inplace=True)
+    else:
+        vf = cfg.get('vf')
+        if vf:
+            resampled_df = df[[vf]].resample(period).agg(agg)
+        else:
+            # keep numeric fields only
+            num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
+            resampled_df = df[num_fields].resample(period).agg(agg)
+
     # handle missing value
+    num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
     for field in num_fields:
         vf = field['name']
         if vf in resampled_df.columns and resampled_df[vf].isnull().any() and field.get('miss'):
@@ -2856,6 +3234,8 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
                 case 'zero':
                     resampled_df[vf] = resampled_df[vf].fillna(value=0)
     return resampled_df, period
+
+
 
 """
 plt ts anomaly detection chart
