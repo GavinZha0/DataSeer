@@ -318,13 +318,15 @@ class DataLoader:
                 df[it['name']] = pd.to_numeric(df[it['name']], errors='coerce', downcast="integer")
                 continue
 
+        df_cols = df.columns.tolist()
+        valid_f = [field for field in fields if ('omit' not in field) and (field['name'] in df_cols)]
         # process missing value
         missing_values = ["n/a", "na", "--"]
         # get fields which has missing config
         if self.dataset_info.transform and self.dataset_info.transform.get('miss'):
-            miss_fields = fields
+            miss_fields = valid_f
         else:
-            miss_fields = [it for it in fields if it.get('miss')]
+            miss_fields = [it for it in valid_f if it.get('miss')]
         for it in miss_fields:
             field_name = it['name']
             if df[field_name].isnull().any():

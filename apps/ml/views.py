@@ -140,7 +140,7 @@ async def build_eda(req: schema.EdaBuildParam, auth: Auth = Depends(AllUserAuth(
         return SuccessResponse()
 
     # generate eda chart
-    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, df, dataset_info.fields)
+    json_rsp = await eda_build_chart(req.tier, req.kind, req.config, df, dataset_info.fields, dataset_info.transform)
     return SuccessResponse(json_rsp)
 
 

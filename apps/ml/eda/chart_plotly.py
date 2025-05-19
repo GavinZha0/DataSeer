@@ -1,4 +1,5 @@
 import math
+import operator
 from collections import Counter
 
 import numpy as np
@@ -23,6 +24,8 @@ import plotly.figure_factory as ff
 from scipy import stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
 from sktime.clustering.k_means import TimeSeriesKMeans
 from sktime.forecasting.timesfm_forecaster import TimesFMForecaster
 from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
@@ -54,8 +57,11 @@ from scipy.stats import chi2
 build chart of statistics
 """
 def plt_stat_chart(kind, config, df, fields):
+    # get valid fields (some columns are removed when data is loaded if they have all null value)
+    df_cols = df.columns.tolist()
+    valid_f = [field for field in fields if ('omit' not in field) and (field['name'] in df_cols)]
+
     # generate chart based on kind
-    valid_f = [field for field in fields if field.get('omit') is None]
     match kind:
         case 'overview':
             # overview
@@ -446,80 +452,213 @@ def plt_feature_chart(kind, config, df, fields):
 """
 build chart of reduction
 """
-def plt_ts_chart(kind, config, df, fields):
+def plt_ts_chart(kind, config, df, fields, transform):
     ts_field = None
     date_fields = [field['name'] for field in fields if field['attr'] == 'date']
-    ts_fields = df.select_dtypes(include='datetime').columns.tolist()
+    cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
+    value_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
+    ts_fields = df.select_dtypes(include=['datetime', 'datetimetz']).columns.tolist()
 
     if config.get('tf'):
         # selected time field
         ts_field = config['tf']
     elif len(date_fields):
-        # the first specific date field
+        # the first defined date field
         ts_field = date_fields[0]
     elif len(ts_fields):
         # the first date field which detected by Pandas
+        # should not come here
         ts_field = ts_fields[0]
     else:
         # no ts field
         return None
 
-    if config.get('vf'):
-        if config.get('cat'):
-            df = df[[ts_field, config['cat'], config['vf']]]
+    # config['vf'] may be string or list
+    vf = config.get('vf')
+    if config.get('vf') and isinstance(config.get('vf'), str):
+        # convert to list for the following processing
+        vf = [config.get('vf')]
+
+    # config['cat'] may be string or list
+    cf = config.get('cat')
+    if cf and isinstance(cf, list):
+        if len(cf) > 1:
+            # combine cat fields into a new column
+            new_cf = '_'.join(cf)
+            df[new_cf] = df[cf].astype(str).agg('_'.join, axis=1)
+            # update cf with new cat field and convert it to a string from list
+            cf = config['cat'] = new_cf
         else:
-            df = df[[ts_field, config['vf']]]
+            # convert cf to a string from list
+            cf = config['cat'] = cf[0]
+
+    # filter selected category fields and value fields
+    final_fields = fields
+    group_fields = [ts_field]
+    # vf is list but cf is string
+    if vf:
+        if cf:
+            # only selected ts field, cat field and value field
+            df = df[[ts_field, cf]+vf]
+            final_fields = [field for field in fields if field['name'] in [ts_field, cf]+vf]
+            group_fields.append(cf)
+        else:
+            # only selected ts field and value field (omit cat fields)
+            df = df[[ts_field]+vf]
+            final_fields = [field for field in fields if field['name'] in [ts_field]+vf]
+    else:
+        if cf:
+            # drop all other category fields
+            if cf in cat_fields:
+                cat_fields.remove(cf)
+            df = df.drop(columns=cat_fields, errors='ignore')
+            # ts field, selected cat field and all value fields
+            final_fields = [field for field in fields if field['name'] in [ts_field, cf]+value_fields]
+            group_fields.append(cf)
+        elif len(cat_fields):
+            # remove all cat fields when no category field is selected
+            df = df.drop(columns=cat_fields)
+            # ts field and all value fields
+            final_fields = [field for field in fields if field['name'] in [ts_field] + value_fields]
+        # update vf to include all value fields when no value field is selected
+        value_fields.sort()
+        vf = value_fields
+
+    # vf is list but cf is string
     # set ts field as index
     df.set_index(ts_field, inplace=True)
-    if len(df.columns) == 1:
-        config['vf'] = df.columns[0]
+
     match kind:
         case 'series':
+            config['vf'] = vf
+            # don't fill null values for time series gap displaying/detection
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
+            # filter ts data
+            df, config = ts_filter(df, config)
             # time series lines
-            fig = plt_ts_series(ts_field, config, df, fields)
-        case 'trend':
-            # Trending line
-            fig = plt_ts_trend(ts_field, config, df, fields)
-        case 'diff':
-            # difference curve
-            fig = plt_ts_diff(ts_field, config, df, fields)
-        case 'compare':
-            # Comparison
-            fig = plt_ts_compare(ts_field, config, df, fields)
-        case 'mavg':
-            # Moving Average
-            fig = plt_ts_mavg(ts_field, config, df, fields)
+            fig = plt_ts_series(df, config, final_fields)
         case 'tsfreq':
             # quarterly, monthly, weekly and daily
-            fig = plt_ts_freq(ts_field, config, df, fields)
+            fig = plt_ts_freq(df, config, final_fields)
+        case 'trend':
+            # don't fill null values for time series gap displaying/detection
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
+            # Trending line
+            fig = plt_ts_trend(df, config, final_fields)
+        case 'diff':
+            config['vf'] = vf
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
+            # difference curve
+            fig = plt_ts_diff(df, config, final_fields)
+        case 'compare':
+            # Comparison
+            fig = plt_ts_compare(df, config, final_fields)
+        case 'mavg':
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
+            # Moving Average
+            fig = plt_ts_mavg(df, config, final_fields)
         case 'autocorr':
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
             # ACF/PACF
-            fig = plt_ts_acf(ts_field, config, df, fields)
-        case 'quantile':
-            # box and violin
-            fig = plt_ts_quantile(ts_field, config, df, fields)
+            fig = plt_ts_acf(df, config, final_fields)
+        case 'tsdist':
+            # mean+std, box and violin
+            fig = plt_ts_distribution(df, config, final_fields)
         case 'cycle':
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
             # Periodicity detection
-            fig = plt_ts_cycle(ts_field, config, df, fields)
+            fig = plt_ts_cycle(df, config, final_fields)
         case 'decomp':
+            df, config['period'] = ts_resample(df, config, fields, transform, False)
             # decomposition(trend + season)
-            fig = plt_ts_decomp(ts_field, config, df, fields)
+            fig = plt_ts_decomp(df, config, final_fields)
         case 'predict':
+            # fill null values with specific config or global transform
+            # config['miss'] has higher priority than transform['miss']
+            df, config['period'] = ts_resample(df, config, fields, transform, True)
             # prediction
-            fig = plt_ts_predict(ts_field, config, df, fields)
+            fig = plt_ts_predict(df, config, final_fields)
         case 'anomaly':
+            if config.get('method') == 'gaps':
+                df, config['period'] = ts_resample(df, config, fields, transform, False)
+            else:
+                df, config['period'] = ts_resample(df, config, fields, transform, True)
             # anomaly detection
-            fig = plt_ts_anomaly(ts_field, config, df, fields)
+            fig = plt_ts_anomaly(df, config, final_fields)
         case 'similarity':
+            df, config['period'] = ts_resample(df, config, fields, transform, True)
             # similarity detection
-            fig = plt_ts_similarity(ts_field, config, df, fields)
+            fig = plt_ts_similarity(df, config, final_fields)
         case 'anc':
+            df, config['period'] = ts_resample(df, config, fields, transform, True)
             # active noice reduction
-            fig = plt_ts_anc(ts_field, config, df, fields)
+            fig = plt_ts_anc(df, config, final_fields)
         case _:
             fig = None
 
     return fig
+
+
+
+
+"""
+filter time series based on config 'filter
+"""
+def ts_filter(df, cfg):
+    if cfg.get('filter') is None:
+        return df, cfg
+
+    ops = {
+        '>': operator.gt,
+        '<': operator.lt,
+        '>=': operator.ge,
+        '<=': operator.le,
+        '==': operator.eq,
+        '!=': operator.ne
+    }
+
+    filter_str = cfg['filter']
+    # get operator
+    if '>=' in filter_str:
+        op_str = '>='
+    elif '>' in filter_str:
+        op_str = '>'
+    elif '<=' in filter_str:
+        op_str = '<='
+    elif '<' in filter_str:
+        op_str = '<'
+    elif '==' in filter_str:
+        op_str = '=='
+    elif '!=' in filter_str:
+        op_str = '!='
+    else:
+        op_str = None
+
+    # get threshold value
+    threshold = None
+    if op_str:
+        split_filter = filter_str.split(op_str)
+        threshold = split_filter[-1]
+        threshold = float(threshold)
+
+    if threshold:
+        op_func = ops.get(op_str)
+        if cfg.get('cat'):
+            # df has category field
+            cf = cfg['cat']
+            keep_cat = []
+            for cat in df[cf].unique():
+                cat_df = df[df[cf] == cat]
+                if op_func(cat_df[cfg['vf']], threshold).any().any():
+                    keep_cat.append(cat)
+            df = df[df[cf].isin(keep_cat)]
+        else:
+            # df has value fields only
+            df = df.loc[:, op_func(df, threshold).any(axis=0)]
+            # update value fields
+            cfg['vf'] = df.columns.tolist()
+            cfg['vf'].sort()
+    return df, cfg
 
 """
 Record Overview
@@ -532,13 +671,16 @@ def plt_stat_overview(cfg, df, fields):
     pie_values = [total_rows - na_rows - dup_rows, na_rows, dup_rows]
 
     # attr fields
-    valid_f = [field for field in fields if field.get('omit') is None]
-    attr_names = ['Continuous', 'Discrete', 'Category', 'Datetime', 'Coordinate']
+    df_cols = df.columns.tolist()
+    valid_f = [field for field in fields if ('omit' not in field) and (field['name'] in df_cols)]
+    omitted_f = [field for field in fields if 'omit' in field]
+    attr_names = ['Continuous', 'Discrete', 'Category', 'Datetime', 'Coordinate', 'Invalid']
     attr_values = [len([field for field in valid_f if field['attr'] == 'conti']),
                    len([field for field in valid_f if field['attr'] == 'disc']),
                    len([field for field in valid_f if field['attr'] == 'cat']),
                    len([field for field in valid_f if field['attr'] == 'date']),
-                   len([field for field in valid_f if field['attr'] == 'coord'])]
+                   len([field for field in valid_f if field['attr'] == 'coord']),
+                   len(fields) - len(valid_f) - len(omitted_f)]
 
     # rows with missing value
     miss_r = df.isnull().sum(axis=1)
@@ -1178,7 +1320,7 @@ def plt_stat_outlier(cfg, df, fields):
 
     # tooltip title
     hover_name = cfg.get('label', 'index')
-    hover_data = num_fields
+    hover_data = valid_fields
     if 'suspect' in df.columns:
         # show suspect field on tooltip
         hover_data.append('suspect')
@@ -1260,7 +1402,7 @@ def plt_stat_outlier(cfg, df, fields):
         fig = px.scatter(df, x='d0', y='d1', color='point_type', labels=labels, text='label_text',
                          color_discrete_map={'inner': "rgba(0, 204, 150, 0.5)", 'outlier': 'rgba(255, 0, 0, 1)'},
                          category_orders={'outlier': [0, 1]}, hover_name=hover_name,
-                         hover_data=hover_data)
+                         hover_data=valid_fields)
 
     fig.update_traces(textposition="bottom center")
     fig.update_layout(title=title, legend_title_text='', legend=dict(xanchor="right", yanchor="top", x=0.99, y=0.99))
@@ -1271,9 +1413,7 @@ def plt_stat_outlier(cfg, df, fields):
 Variance rank
 """
 def plt_stat_var(cfg, df, fields):
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
-
+    num_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
     vars = df[num_fields].var().sort_values().round(3)
     fig = px.bar(x=vars.index.to_list(), y=vars.values, title='Variance Rank', text_auto=True)
     fig.update_layout(hovermode='x')
@@ -1900,95 +2040,82 @@ def plt_ts_overview(tsf, cfg, df, fields):
 
 
 """
-plt ts trending chart
+plt time series lines
 {"pid": "ts", "tf": "time", "period": "YE", "vf": "kpi", "agg": "mean", "cat": "country", "solo": true, "connected": true}
 """
-def plt_ts_series(tsf, cfg, df, fields):
+def plt_ts_series(df, cfg, fields):
     fig = go.Figure()
-    v_fields = [field['name'] for field in fields if field['attr'] in ('conti', 'disc')]
+    ts_name = df.index.name
 
-    cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
+    # category/value field
+    cat_field = cfg.get('cat')
+    v_fields = cfg['vf']
+    v_fields.sort()
 
-    if cfg.get('vf'):
-        v_fields = [cfg['vf']]
-
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'  # default
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
+    line_with_gaps = cfg.get('gap', False)
     connected = True
     if cfg.get('connected'):
         connected = cfg['connected']
 
-    agg_cfg = {}
-    for nf in v_fields:
-        agg_cfg[nf] = agg
+    if line_with_gaps:
+        # get all cat names with missing values
+        cat_values = df[df[v_fields].isna().any(axis=1)][cat_field].unique().astype(str)
 
-    # category field
-    cat_field = cfg.get('cat')
-    gaps = cfg.get('gap', False)
-
-    period = 'D'
-    if cfg.get('period'):
-        ts_df, period = ts_resample(tsf, cfg, df, fields, (not gaps))
-        '''
-        period = cfg['period']
-        # aggregated by period (YS,QS,MS,W,D,h,min,s)
-        ts_df = df.resample(cfg['period']).agg(agg_cfg)
-        if period.startswith('Y'):
-            # show year only (don't show month and day for Y)
-            ts_df.index = ts_df.index.strftime('%Y')
-        elif period.startswith('QQ'):
-            # convert to period for getting quarters
-            ts_df.index = ts_df.index.to_period('Q')
-            ts_df.index = ts_df.index.strftime('%Y-Q%q')
-        '''
-    else:
-        cat_fields.insert(0, tsf)
-        ts_df = df.groupby(cat_fields).agg(agg_cfg)
-        ts_df.reset_index(inplace=True)
-        ts_df.set_index(tsf, inplace=True)
-
-
-
-    if cfg.get('solo'):
-        # put curves on separated charts
-        rows = len(v_fields)
-        fig = make_subplots(rows=rows, cols=1, subplot_titles=v_fields, row_heights=[300 for n in range(rows)],
-                            horizontal_spacing=0.05, vertical_spacing=0.2 / rows)
-        [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name='', connectgaps=connected,
-                                  hovertemplate='%{y}<extra></extra>'), i + 1, 1) for i, nf in enumerate(v_fields)]
-        fig.update_xaxes(matches='x')
-        fig.update_layout(showlegend=False, height=rows * 300, hovermode='x')
-    else:
-        if cat_field:
-            if gaps:
-                # get all cat names with missing values
-                cat_values = ts_df[ts_df[v_fields].isna().any(axis=1)][cat_field].unique().astype(str)
+    title = f'Time series - {cfg["agg"]}, [{df.index.min()} ~ {df.index.max()}]'
+    if cat_field:
+        df.reset_index(inplace=True)
+        cat_total = df[cat_field].nunique()
+        sorted_cat = df[cat_field].unique().astype(str)
+        sorted_cat.sort()
+        if len(v_fields) == 1:
+            if cfg.get('solo'):
+                fig = px.line(df, x=ts_name, y=v_fields[0], facet_col=cat_field, facet_col_wrap=2,
+                              facet_row_spacing=min(0.05,1/cat_total), height=800 if cat_total < 3 else 300)
+                fig.update_layout(legend_title_text=f'{cat_field} ({cat_total})',
+                                  height=800 if cat_total < 3 else (math.ceil(cat_total/2) * 300))
             else:
-                cat_values = ts_df[cat_field].unique().astype(str)
-
-            cat_values.sort()
-            curr_num = len(cat_values)
-            ts_df = ts_df[ts_df[cat_field].isin(cat_values)]
-            if curr_num > 50:
-                page = cfg['page'] if cfg.get('page') else 0
-                # sort for pages
-                cat_50 = cat_values[page*50:(page+1)*50]
-                ts_df = ts_df[ts_df[cat_field].isin(cat_50)]
-                curr_num = len(cat_50)
-            ts_df.reset_index(inplace=True)
-            # df.sort_values(by=[tsf, cat_field], inplace=True)
-            fig = px.line(ts_df, x=tsf, y=v_fields[0], color=cat_field)
-            # fig.update_layout(legend_traceorder="normal")
-            fig.update_layout(title=f'Time series ({curr_num}/{len(cat_values)})', legend_title_text=f'{cat_field} ({curr_num})')
+                fig = px.line(df, x=ts_name, y=v_fields[0], color=cat_field, category_orders={cat_field: sorted_cat})
+                fig.update_layout(legend_title_text=f'{cat_field} ({cat_total})')
+            fig.for_each_xaxis(lambda x: x.update(title=''))
+        else:
+            # put curves on separated charts by value fields
+            cols = 1 if len(v_fields) < 4 else 2
+            rows = math.ceil(len(v_fields) / cols)
+            fig = make_subplots(rows=rows, cols=cols, row_heights=[800 if rows == 1 else 300 for n in range(rows)],
+                                horizontal_spacing=0.05, vertical_spacing=min(1/rows, 0.1))
+            for idx, vfield in enumerate(v_fields):
+                # build lines by category
+                px_line = px.line(df, x=ts_name, y=vfield, color=cat_field)
+                # sort lines by category name
+                sorted_lines = sorted(px_line.data, key=lambda x: x['name'])
+                # all sub plots have same legend. show first legend only
+                [fig.add_trace(go.Scatter(x=line['x'], y=line['y'], name=line['name'], connectgaps=connected, showlegend=True if idx==0 else False),
+                               (idx // cols) + 1, (idx % cols) + 1) for line in sorted_lines]
+            [fig.update_yaxes(row=(i // cols) + 1, col=(i % cols) + 1, title_text=nf) for i, nf in enumerate(v_fields)]
+            fig.update_xaxes(matches='x')
+            fig.update_layout(legend_title_text=f'{cat_field} ({cat_total})', height=800 if rows == 1 else (rows * 300))
+    else:
+        if cfg.get('solo'):
+            # put curves on separated charts by value fields
+            cols = 1 if len(v_fields) < 4 else 2
+            rows = math.ceil(len(v_fields) / cols)
+            fig = make_subplots(rows=rows, cols=cols, row_heights=[800 if rows == 1 else 300 for n in range(rows)],
+                                horizontal_spacing=0.05, vertical_spacing=min(1/rows, 0.1))
+            [fig.add_trace(go.Scatter(x=df.index, y=df[nf], name='', connectgaps=connected),
+                           (i // cols) + 1, (i % cols) + 1) for i, nf in enumerate(v_fields)]
+            [fig.update_yaxes(row=(i // cols) + 1, col=(i % cols) + 1, title_text=nf) for i, nf in enumerate(v_fields)]
+            fig.update_xaxes(matches='x')
+            fig.update_layout(showlegend=False, height=800 if rows == 1 else (rows * 300))
         else:
             # put all curves on one chart
-            [fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[nf], name=nf, connectgaps=connected,
-                                      hovertemplate='%{y}<extra></extra>')) for nf in v_fields]
-            fig.update_layout(hovermode='x')
-
+            [fig.add_trace(go.Scatter(x=df.index, y=df[nf], name=nf, connectgaps=connected)) for nf in v_fields]
+            if (len(v_fields) == 1):
+                # specific y axis label
+                fig.update_yaxes(title_text=v_fields[0])
+            else:
+                # general y axis label
+                fig.update_yaxes(title_text='value')
+    fig.update_layout(title=title, hovermode='x')
     return fig
 
 
@@ -1997,8 +2124,8 @@ plt ts trending line chart
 # ols(线性普通最小二乘), lowess(局部加权线性回归), rolling(移动平均线), ewm(指数加权移动平均), expanding(扩展窗)
 {"pid": "ts", "ts": "date", "vf": "open",  "period": "M", "agg": "mean", "frac": 0.6}
 """
-def plt_ts_trend(tsf, cfg, df, fields):
-    # value field
+def plt_ts_trend(df, cfg, fields):
+    # value field and period are mandatory
     if cfg.get('vf') is None or cfg.get('period') is None:
         return None
 
@@ -2008,18 +2135,16 @@ def plt_ts_trend(tsf, cfg, df, fields):
         connected = cfg['connected']
 
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
-    if period.startswith('Y'):
+    if cfg['period'].startswith('Y'):
         # show year only (don't show month and day for Y)
-        ts_df.index = ts_df.index.strftime('%Y')
-    elif period.startswith('QQ'):
+        df.index = df.index.strftime('%Y')
+    elif cfg['period'].startswith('QQ'):
         # convert to period for getting quarters
-        ts_df.index = ts_df.index.to_period('Q')
-        ts_df.index = ts_df.index.strftime('%Y-%q')
+        df.index = df.index.to_period('Q')
+        df.index = df.index.strftime('%Y-%q')
 
-    max_win = len(ts_df)
+    max_win = len(df)
     frac = 0.667  # [0, 1]
-    win = 5
     if cfg.get('frac'):
         frac = cfg['frac']
         if frac < 0:
@@ -2034,102 +2159,78 @@ def plt_ts_trend(tsf, cfg, df, fields):
     fig = go.Figure()
     # ts_df.reset_index(inplace=True)
     # 线性
-    fig = px.scatter(ts_df, x=ts_df.index, y=vfield, trendline='ols')
-    ts_df['ols'] = fig.data[1].y
+    fig = px.scatter(df, x=df.index, y=vfield, trendline='ols')
+    df['ols'] = fig.data[1].y
 
     # The fraction of the data used when estimating each y-value.
     # 平滑
-    fig = px.scatter(ts_df, x=ts_df.index, y=vfield, trendline='lowess', trendline_options=dict(frac=frac))
-    ts_df['lowess'] = fig.data[1].y
+    fig = px.scatter(df, x=df.index, y=vfield, trendline='lowess', trendline_options=dict(frac=frac))
+    df['lowess'] = fig.data[1].y
 
     # 中心滞后，权重相同
-    fig = px.scatter(ts_df, x=ts_df.index, y=vfield, trendline='rolling', trendline_options=dict(window=win, min_periods=1))
-    ts_df['rolling'] = fig.data[1].y
+    fig = px.scatter(df, x=df.index, y=vfield, trendline='rolling', trendline_options=dict(window=win, min_periods=1))
+    df['rolling'] = fig.data[1].y
 
     # 中心滞后，权重衰减
-    fig = px.scatter(ts_df, x=ts_df.index, y=vfield, trendline='ewm', trendline_options=dict(halflife=win))
-    ts_df['ewm'] = fig.data[1].y
+    fig = px.scatter(df, x=df.index, y=vfield, trendline='ewm', trendline_options=dict(halflife=win))
+    df['ewm'] = fig.data[1].y
 
     # it is OLS when degree=1
     forecaster = PolynomialTrendForecaster(degree=int(1//frac))
-    prange = pd.date_range(ts_df.index.min(), periods=len(ts_df), freq=period)
-    ts_df['polynomial'] = forecaster.fit(ts_df[vfield]).predict(fh=prange)
+    prange = pd.date_range(df.index.min(), periods=len(df), freq=cfg['period'])
+    df['polynomial'] = forecaster.fit(df[vfield]).predict(fh=prange)
 
     # time series line
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name=vfield, connectgaps=connected))
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['ols'], name='Ols'))
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['lowess'], name='Lowess'))
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['rolling'], name='Rolling'))
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['ewm'], name='Ewm'))
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['polynomial'], name='Polynomial'))
-    fig.update_layout(hovermode='x')
+    fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name=vfield, connectgaps=connected))
+    fig.add_trace(go.Scatter(x=df.index, y=df['ols'], name='Ols'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['lowess'], name='Lowess'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['rolling'], name='Rolling'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['ewm'], name='Ewm'))
+    fig.add_trace(go.Scatter(x=df.index, y=df['polynomial'], name='Polynomial'))
+    title = f'{vfield} trending, [{df.index.min()} ~ {df.index.max()}]'
+    fig.update_layout(title=title, yaxis_title=f'{vfield} ({cfg["agg"]})', hovermode='x')
     return fig
 
 
 """
 plt ts difference chart
-# 差分，与前面diff个周期值的差，可见指标增长或下降
-{"pid": "ts", "ts": "time", "period": "YE", "agg": "mean", "solo": false, "field": "dena72", "diff": 1, "step": 1}
+# 差分，与前面lag个周期值的差，可见指标增长或下降
+# order, 差分次数(阶数)
+{"pid": "ts", "ts": "time", "period": "YE", "agg": "mean", "solo": false, "vf": ["dena72"], "lag": 1, "step": 1}
 """
-def plt_ts_diff(tsf, cfg, df, fields):
+def plt_ts_diff(df, cfg, fields):
     fig = go.Figure()
-    if cfg.get('period') is None:
+    # cfg['vf'] is a list
+    if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
 
-    num_fields = [field['name'] for field in fields if field['attr'] == 'conti'] + \
-                 [field['name'] for field in fields if field['attr'] == 'disc']
-    diff = 1
-    if cfg.get('diff'):
-        diff = cfg['diff']
+    lag = cfg.get('lag', 1)
+    order = cfg.get('order', 1)
 
-    step = 1
-    if cfg.get('step'):
-        step = cfg['step']
-
-    # agg: sum, mean, median, min, max, std, count
-    agg = 'mean'  # default
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
-    vf = None
-    agg_cfg = {}
-    if cfg.get('vf'):
-        vf = cfg['vf']
-        agg_cfg[vf] = agg
-    else:
-        for nf in num_fields:
-            agg_cfg[nf] = agg
-
-    # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
-
-    if period.startswith('Y'):
+    vf = cfg.get('vf')
+    if cfg.get('period') and cfg.get('period').startswith('Y'):
         # show year only (don't show month and day for Y)
-        ts_df.index = ts_df.index.strftime('%Y')
+        df.index = df.index.strftime('%Y')
 
-    if vf:
-        # specific value field
-        for i in range(step):
-            ts_df[vf] = ts_df[vf].diff(periods=diff)
-        fig.add_trace(go.Bar(x=ts_df.index, y=ts_df[vf], name=vf))
-        fig.update_layout(height=800, hovermode='x')
+    for i in range(order):
+        df[vf] = df[vf].diff(periods=lag)
+    if cfg.get('solo'):
+        # put curves on separated charts
+        rows = len(vf)
+        fig = make_subplots(rows=rows, cols=1, subplot_titles=vf, row_heights=[300 for n in range(rows)],
+                            horizontal_spacing=0.05, vertical_spacing=0.2 / rows)
+        [fig.add_trace(go.Bar(x=df.index, y=df[nf], name=''), i + 1, 1) for i, nf in enumerate(vf)]
+        fig.update_xaxes(matches='x')
+        fig.update_layout(showlegend=False, height=rows * 300)
     else:
-        for i in range(step):
-            ts_df[num_fields] = ts_df[num_fields].diff(periods=diff)
-        if cfg.get('solo'):
-            # put curves on separated charts
-            rows = len(num_fields)
-            fig = make_subplots(rows=rows, cols=1, subplot_titles=num_fields, row_heights=[300 for n in range(rows)],
-                                 horizontal_spacing=0.05, vertical_spacing=0.2/rows)
-            [fig.add_trace(go.Bar(x=ts_df.index, y=ts_df[nf], name=''), i+1, 1) for i, nf in enumerate(num_fields)]
-            fig.update_xaxes(matches='x')
-            fig.update_layout(showlegend=False, height=rows*300, hovermode='x')
-        else:
-            # put all curves on one chart
-            [fig.add_trace(go.Bar(x=ts_df.index, y=ts_df[nf], name=nf, hovertemplate='%{y}<extra></extra>'))
-             for nf in num_fields]
-            fig.update_layout(hovermode='x')
+        # put all curves on one chart
+        [fig.add_trace(go.Bar(x=df.index, y=df[nf], name=nf, hovertemplate='%{y}<extra></extra>'))
+         for nf in vf]
+
+    # 间隔为lag的order阶差分
+    title = f'{order} order difference lag of {lag}, [{df.index.min()} ~ {df.index.max()}]'
+    fig.update_layout(title=title, hovermode='x')
     return fig
 
 
@@ -2138,70 +2239,73 @@ plt ts frequency chart
 尽量选择一个完整的周期，如2020-08-05 到2-24-08-05
 {"pid": "ts", "ts": "time", "field": "dena74", "agg": "sum"}
 """
-def plt_ts_freq(tsf, cfg, df, fields):
+def plt_ts_freq(df, cfg, fields):
     fig = go.Figure()
-    if cfg.get('vf') is None:
+    if cfg.get('vf') is None or (isinstance(cfg.get('vf'), list) and len(cfg['vf']) != 1):
         return fig
+
+    vfield = cfg['vf']  # value field
+    if isinstance(cfg.get('vf'), list):
+        vfield = cfg['vf'][0]
 
     # agg: sum, mean, median, min, max, count
     agg = 'mean'
-    vfield = cfg['vf']  # metrix field
     if cfg.get('agg'):
         agg = cfg['agg']
 
+    ts_name = df.index.name
     min_ts = df.index.min()
     max_ts = df.index.max()
-    title = 'Datetime from ' + min_ts.strftime('%Y-%m-%d') + ' to ' + max_ts.strftime('%Y-%m-%d')
+    title = f"{vfield} frequency, [{df.index.min()} ~ {df.index.max()}]"
     fig = make_subplots(rows=3, cols=2, specs=[[{}, {}], [{}, {}], [{"colspan": 2}, None]],
                         subplot_titles=['Quarterly', 'Monthly', 'Weekly', 'Hourly', 'Daily'])
 
     # Quarterly
-    # aaaa = df.resample('Q').asfreq()
-    ts_df = pd.DataFrame({tsf: df.index.quarter, vfield: df[vfield]})
-    ts_df.set_index(tsf, inplace=True)
-    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsf], data=range(1, 5, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
-    fig.add_trace(
-        go.Bar(x='Q' + merged_df[tsf].astype('string'), y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 1)
+    ts_df = pd.DataFrame({ts_name: df.index.quarter, vfield: df[vfield]})
+    ts_df.set_index(ts_name, inplace=True)
+    gp_df = ts_df.groupby(ts_name).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[ts_name], data=range(1, 5, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=ts_name, right_index=True, how="left")
+    fig.add_trace(go.Bar(x='Q' + merged_df[ts_name].astype('string'), y=merged_df[vfield], name='',
+                         text=merged_df[vfield]), 1, 1)
 
     # Monthly
-    ts_df = pd.DataFrame({tsf: df.index.strftime('%b'), vfield: df[vfield]})
-    ts_df.set_index(tsf, inplace=True)
-    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsf], data=pd.date_range(start='2024-01-01', end='2024-12-01', freq='MS')
+    ts_df = pd.DataFrame({ts_name: df.index.strftime('%b'), vfield: df[vfield]})
+    ts_df.set_index(ts_name, inplace=True)
+    gp_df = ts_df.groupby(ts_name).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[ts_name], data=pd.date_range(start='2024-01-01', end='2024-12-01', freq='MS')
                           .strftime('%b').to_list())
-    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 2)
+    merged_df = pd.merge(per_df, gp_df, left_on=ts_name, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[ts_name], y=merged_df[vfield], name='', text=merged_df[vfield]), 1, 2)
 
     # Weekly
-    ts_df = pd.DataFrame({tsf: df.index.strftime('%a'), vfield: df[vfield]})
-    ts_df.set_index(tsf, inplace=True)
-    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsf],
+    ts_df = pd.DataFrame({ts_name: df.index.strftime('%a'), vfield: df[vfield]})
+    ts_df.set_index(ts_name, inplace=True)
+    gp_df = ts_df.groupby(ts_name).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[ts_name],
                           data=pd.date_range(start='2024-09-01', end='2024-09-07', freq='D')
                           .strftime('%a').to_list())
-    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 1)
+    merged_df = pd.merge(per_df, gp_df, left_on=ts_name, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[ts_name], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 1)
 
     # Hourly
-    ts_df = pd.DataFrame({tsf: df.index.hour, vfield: df[vfield]})
-    ts_df.set_index(tsf, inplace=True)
-    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsf], data=range(0, 24, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 2)
+    ts_df = pd.DataFrame({ts_name: df.index.hour, vfield: df[vfield]})
+    ts_df.set_index(ts_name, inplace=True)
+    gp_df = ts_df.groupby(ts_name).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[ts_name], data=range(0, 24, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=ts_name, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[ts_name], y=merged_df[vfield], name='', text=merged_df[vfield]), 2, 2)
 
     # Daily
-    ts_df = pd.DataFrame({tsf: df.index.day, vfield: df[vfield]})
-    ts_df.set_index(tsf, inplace=True)
-    gp_df = ts_df.groupby(tsf).agg(agg).round(3)
-    per_df = pd.DataFrame(columns=[tsf], data=range(1, 32, 1))
-    merged_df = pd.merge(per_df, gp_df, left_on=tsf, right_index=True, how="left")
-    fig.add_trace(go.Bar(x=merged_df[tsf], y=merged_df[vfield], name='', text=merged_df[vfield]), 3, 1)
+    ts_df = pd.DataFrame({ts_name: df.index.day, vfield: df[vfield]})
+    ts_df.set_index(ts_name, inplace=True)
+    gp_df = ts_df.groupby(ts_name).agg(agg).round(3)
+    per_df = pd.DataFrame(columns=[ts_name], data=range(1, 32, 1))
+    merged_df = pd.merge(per_df, gp_df, left_on=ts_name, right_index=True, how="left")
+    fig.add_trace(go.Bar(x=merged_df[ts_name], y=merged_df[vfield], name='', text=merged_df[vfield]), 3, 1)
 
     fig.update_xaxes(type='category')
-    fig.update_layout(title=title, showlegend=False)
+    fig.update_layout(title=title, yaxis_title=f'{vfield} ({agg})', showlegend=False)
     return fig
 
 
@@ -2211,16 +2315,13 @@ plt ts compare chart
 # refer to https://pandas.pydata.org/docs/reference/api/pandas.Period.strftime.html
 {"pid": "ts", "ts": "time", "field": "dena74", "group": "m", "period": "Y", "agg": "sum"}
 """
-def plt_ts_compare(tsf, cfg, df, fields):
+def plt_ts_compare(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('groupby') is None or cfg.get('period') is None:
         return fig
 
     # agg: sum, mean, median, min, max, count
-    agg = 'mean'
-    if cfg.get('agg'):
-        agg = cfg['agg']
-
+    agg = cfg.get('agg', 'mean')
     vfield = cfg['vf']
     group = cfg['groupby']
     period = cfg['period']
@@ -2260,10 +2361,11 @@ def plt_ts_compare(tsf, cfg, df, fields):
         ww = dict(enumerate(calendar.day_abbr))
         ts_df['ts_' + period] = ts_df['ts_' + period].map(ww)
 
-    # why didn't I use hisFunc for agg - Gavin??
+    # why didn't I use hisFunc for agg - it has been done above
     fig = px.histogram(ts_df, x='ts_' + group, y=vfield, color='ts_' + period, barmode='group')
     fig.update_xaxes(type='category')
-    fig.update_layout(xaxis_title='', yaxis_title='', legend_title='')
+    title = f'Contemporary comparison, [{df.index.min()} ~ {df.index.max()}]'
+    fig.update_layout(title=title, xaxis_title='', yaxis_title=f'{vfield} ({agg})', legend_title='')
     return fig
 
 
@@ -2279,52 +2381,87 @@ plt ts ACF/PACF chart
 如果说自相关图和偏自相关图均显示为截尾，那么说明不适合建立ARIMA模型。
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "m", "agg": "sum", "lag": 20}
 """
-def plt_ts_acf(tsf, cfg, df, fields):
+def plt_ts_acf(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('period') is None or cfg.get('vf') is None:
         return fig
 
-    # group by date field and period(YE,Q,M,W,D,H,min,s) then aggregate numerical fields
-    # agg: sum, mean, median, min, max, count
     vfield = cfg['vf']
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    title = f'{vfield} stationarity test, [{df.index.min()} ~ {df.index.max()}]'
+    if cfg.get('order') is not None and cfg['order'] > 0:
+        order = cfg['order']
+        title = f'{vfield} stationarity after {order} order diff, [{df.index.min()} ~ {df.index.max()}]'
+        for i in range(order):
+            df[vfield] = df[vfield].diff(periods=1)
+        # drop null rows
+        df = df.dropna()
 
-    lag = 10
-    if cfg.get('lag'):
-        lag = cfg['lag']
-    pacf_limit = math.floor(len(ts_df) / 2)
+    # Can only compute partial correlations for lags up to 50% of the sample size
+    lag = cfg.get('lag', 10)
+    pacf_limit = math.floor(len(df) / 2)
     if lag > pacf_limit:
         lag = pacf_limit - 1
 
     # adf test and kpss test to detect if it is stationary
-    adf_test = adfuller(ts_df[vfield], autolag='AIC')
+    adf_test = adfuller(df[vfield], autolag='AIC')
     p_val1 = adf_test[1]
-    kpss_test = kpss(ts_df[vfield], regression='c')
+    kpss_test = kpss(df[vfield], regression='c')
     p_val2 = kpss_test[1]
 
     test_result = 'non-stationary'
     if (p_val1 < 0.05) and (p_val2 > 0.05):
         test_result = 'stationary'
 
-    ts_df.reset_index(inplace=True)
-    fig = make_subplots(rows=2, cols=1,
-                        subplot_titles=[f'Autocorrelation ({test_result})', f'Partial Autocorrelation ({test_result})'])
+    fig = make_subplots(rows=2, cols=1, vertical_spacing=0.1,
+                        subplot_titles=[f'AutoCorrelation ({test_result})', f'Partial AutoCorrelation ({test_result})'])
     # Auto Correlation Function(自相关)
-    acf_df = acf(ts_df[vfield], nlags=lag)
+    acf_df, confint = acf(df[vfield], nlags=lag, alpha=0.05)
     acf_df = acf_df.round(3)
-    [fig.add_trace(go.Scatter(x=(x, x), y=(0, acf_df[x]), mode='lines', name='', line_color='#3f3f3f'), 1, 1)
-     for x in range(len(acf_df))]
-    fig.add_trace(go.Scatter(x=np.arange(len(acf_df)), y=acf_df, name='', mode='markers'), 1, 1)
+    # 95% confidence interval
+    confint_lower = confint[:, 0] - acf_df
+    confint_upper = confint[:, 1] - acf_df
+    lags = np.arange(len(acf_df))
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([lags, lags[::-1]]),
+        y=np.concatenate([confint_upper, confint_lower[::-1]]),
+        fill='toself',
+        fillcolor='rgba(0,100,80,0.2)',
+        line=dict(color='rgba(255,255,255,0)'),
+        name='95%',
+        showlegend=True
+    ), 1, 1)
+    # add matchstick chart
+    [fig.add_trace(go.Scatter(x=(x, x), y=(0, acf_df[x]), mode='lines', name='', line_color='black'), 1, 1)
+                    for x in range(len(acf_df))]
+    fig.add_trace(go.Scatter(x=np.arange(len(acf_df)), y=acf_df, name='', mode='markers', marker_color='red'), 1, 1)
 
     # partial Auto Correlation Function(偏自相关)
     # method: ols, yw, ywm, ld, ldb
-    pacf_df = pacf(ts_df[vfield], nlags=lag)
+    pacf_df, confint = pacf(df[vfield], nlags=lag, alpha=0.05)
     pacf_df = pacf_df.round(3)
-    [fig.add_trace(go.Scatter(x=(x, x), y=(0, pacf_df[x]), mode='lines', name='', line_color='#3f3f3f'), 2, 1)
+    # 95% confidence interval
+    confint_lower = confint[:, 0] - pacf_df
+    confint_upper = confint[:, 1] - pacf_df
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([lags, lags[::-1]]),
+        y=np.concatenate([confint_upper, confint_lower[::-1]]),
+        fill='toself',
+        fillcolor='rgba(255,165,0,0.2)',
+        line=dict(color='rgba(255,255,255,0)'),
+        name='95%',
+        showlegend=True
+    ), 2, 1)
+    # add matchstick chart
+    [fig.add_trace(go.Scatter(x=(x, x), y=(0, pacf_df[x]), mode='lines', name='', line_color='black'), 2, 1)
      for x in range(len(pacf_df))]
-    fig.add_trace(go.Scatter(x=np.arange(len(pacf_df)), y=pacf_df, name='', mode='markers'), 2, 1)
+    fig.add_trace(go.Scatter(x=np.arange(len(pacf_df)), y=pacf_df, name='', mode='markers', marker_color='red'), 2, 1)
 
-    fig.update_layout(showlegend=False)
+    fig.add_hline(y=0, line_dash='dash', line_color='gray')
+
+    fig.update_yaxes(row=1, col=1, title_text='coefficient')
+    fig.update_yaxes(row=2, col=1, title_text='coefficient')
+    fig.update_xaxes(row=2, col=1, title_text='Lags')
+    fig.update_layout(title=title, showlegend=False, hovermode='x')
     return fig
 
 
@@ -2337,51 +2474,48 @@ SMA：权重系数一致；WMA：权重系数随时间间隔线性递减；EMA�
 # window type: https://docs.scipy.org/doc/scipy/reference/signal.windows.html#module-scipy.signal.windows
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "m", "agg": "sum", "win": 3}
 """
-def plt_ts_mavg(tsf, cfg, df, fields):
+def plt_ts_mavg(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None:
         return fig
 
     vfield = cfg['vf']
-    win = 3
-    if cfg.get('win'):
-        win = cfg['win']
-
-    # group by date field and period(YS,QS,MS,W,D,H,min,s) then aggregate numerical fields
-    # agg data based on period first
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    win = cfg.get('win', 3)
 
     min_per = win
     if isinstance(win, int):
         min_per = math.ceil(win/2)
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name=vfield, connectgaps=True))
-    ts_df[vfield] = ts_df[vfield].rolling(window=win, min_periods=min_per).mean()
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name='SMA', connectgaps=True))
+    fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name=vfield, connectgaps=True))
+    df[vfield] = df[vfield].rolling(window=win, min_periods=min_per).mean()
+    fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name='SMA', connectgaps=True))
     if isinstance(win, int):
         # WMA and EMA don't support date win like '2M'
-        ts_df[vfield] = ts_df[vfield].rolling(window=win).apply(lambda x: x[::-1].cumsum().sum() * 2 / win / (win + 1))
-        fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name='WMA', connectgaps=True))
+        df[vfield] = df[vfield].rolling(window=win).apply(lambda x: x[::-1].cumsum().sum() * 2 / win / (win + 1))
+        fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name='WMA', connectgaps=True))
 
-        ts_df[vfield] = ts_df[vfield].ewm(span=win).mean()
-        fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name='EMA', connectgaps=True))
+        df[vfield] = df[vfield].ewm(span=win).mean()
+        fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name='EMA', connectgaps=True))
 
+    title = f'Moving average, [{df.index.min()} ~ {df.index.max()}]'
+    fig.update_layout(title=title, yaxis_title=f'{vfield} ({cfg["agg"]})', hovermode='x')
     return fig
 
 
 """
-plt ts box/violin chart
+plt ts mean+std, box or violin chart
 {"pid": "ts", "ts": "time", "field": "dena74", "period": "Q", "violin": true}
 """
-def plt_ts_quantile(tsf, cfg, df, fields):
+def plt_ts_distribution(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('period') is None or cfg.get('vf') is None:
         return fig
 
     period = cfg['period']
     vfield = cfg['vf']  # metrix field
-    df.index = df.index.to_period(period)
-    df.reset_index(inplace=True)
-    ts_df = df.groupby(tsf)
+    cfield = cfg.get('cat')
+    outlier = cfg.get('outlier', False)
+    title = f'Quantile distribution, [{df.index.min()} ~ {df.index.max()}]'
+
     if period.startswith('Y'):
         ts_format = '%Y'
     elif period.startswith('Q'):
@@ -2392,21 +2526,70 @@ def plt_ts_quantile(tsf, cfg, df, fields):
         ts_format = '%Y-W%U'
     elif period.startswith('D'):
         ts_format = '%Y-%m-%d'
-    elif period.startswith('H'):
+    elif period.startswith('h'):
         ts_format = '%Y-%m-%d %H'
     elif period.startswith('min'):
         ts_format = '%Y-%m-%d %H:%M'
     else:
         ts_format = '%Y-%m-%d %H:%M:%S'
 
-    for freq, data in ts_df:
-        if len(data) > 0 or (len(data) == 0 and cfg.get('gap')):
-            if cfg.get('violin'):
-                fig.add_trace(go.Violin(y=data[vfield], name=freq.strftime(ts_format), points='outliers',
-                                        box_visible=True, meanline_visible=False))
+    ts_name = df.index.name
+    df.index = df.index.to_period(period)
+    df.reset_index(inplace=True)
+    if cfg.get('disp') is None or cfg['disp'] == 'mean':
+        if cfield:
+            # mean and std of every ts group
+            mean_std = df.groupby(by=[cfield, ts_name], observed=True)[vfield].agg(['mean', 'std']).reset_index()
+            # sort categories for facet displaying
+            u_cats = mean_std[cfield].unique().astype(str)
+            u_cats.sort()
+
+            # convert ts to str
+            mean_std[ts_name] = mean_std[ts_name].dt.strftime(ts_format)
+            mean_std['mean'] = mean_std['mean'].round(3)
+            mean_std['std'] = mean_std['std'].round(3)
+
+            # show mean +std following ascending order
+            fig = px.scatter(mean_std, x=ts_name, y='mean', error_y='std', facet_col=cfield, facet_col_wrap=2,
+                             category_orders={cfield: u_cats}, labels={ts_name: '', 'mean': vfield})
+            lines = px.line(mean_std, x=ts_name, y='mean', facet_col=cfield, facet_col_wrap=2, hover_data=[],
+                            category_orders={cfield: u_cats}, color_discrete_sequence=['green'], labels={ts_name: '', 'mean': vfield})
+            fig.add_traces(lines.data)
+        else:
+            # mean and std of every ts group
+            mean_std = df.groupby(by=ts_name, observed=True)[vfield].agg(['mean', 'std']).reset_index()
+            # convert ts to str
+            mean_std[ts_name] = mean_std[ts_name].dt.strftime(ts_format)
+            mean_std['mean'] = mean_std['mean'].round(3)
+            mean_std['std'] = mean_std['std'].round(3)
+            # show mean + std
+            fig = px.scatter(mean_std, x=ts_name, y='mean', error_y='std')
+            fig.add_traces(px.line(mean_std, x=ts_name, y='mean', hover_data=[], color_discrete_sequence=['green']).data)
+    else:
+        # keep all original data points for box/violin without ts resample
+        df.reset_index(inplace=True)
+        df[ts_name] = df[ts_name].dt.strftime(ts_format)
+        if cfield:
+            # sort categories for facet displaying
+            u_cats = df[cfield].unique().astype(str)
+            u_cats.sort()
+            if cfg['disp'] == 'violin':
+                # show violin following ascending order
+                fig = px.violin(df, x=ts_name, y=vfield, facet_col=cfield, facet_col_wrap=2, box=True, labels={ts_name: ''},
+                                points=('outliers' if outlier else False), category_orders={cfield: u_cats})
             else:
-                fig.add_trace(go.Box(y=data[vfield], name=freq.strftime(ts_format), boxmean=True,
-                                     boxpoints='outliers'))
+                # show box following ascending order
+                fig = px.box(df, x=ts_name, y=vfield, facet_col=cfield, facet_col_wrap=2, labels={ts_name: ''},
+                             points=('outliers' if outlier else False), category_orders={cfield: u_cats})
+        else:
+            if cfg['disp'] == 'violin':
+                # show violin following ascending order
+                fig = px.violin(df, x=ts_name, y=vfield, box=True, points=('outliers' if outlier else False))
+            else:
+                # show box following ascending order
+                fig = px.box(df, x=ts_name, y=vfield, points=('outliers' if outlier else False))
+
+    fig.update_layout(title=title, showlegend=False, xaxis_title='', hovermode='x')
     return fig
 
 
@@ -2414,32 +2597,32 @@ def plt_ts_quantile(tsf, cfg, df, fields):
 plt ts cycle chart
 {"pid": "ts", "ts": "date", "field": "open",  "period": "M", "agg": "mean", "algo": "psd"}
 """
-def plt_ts_cycle(tsf, cfg, df, fields):
+def plt_ts_cycle(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None:
         return fig
 
     vfield = cfg['vf']
-    # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    period = cfg.get('period')
     if period is not None and period.startswith('Y'):
         # show year only (don't show month and day for Y)
-        ts_df.index = ts_df.index.strftime('%Y')
+        df.index = df.index.strftime('%Y')
     elif period is not None and period.startswith('Q'):
         # convert to period for getting quarters
-        ts_df.index = ts_df.index.to_period('Q')
-        ts_df.index = ts_df.index.strftime('%Y-Q%q')
+        df.index = df.index.to_period('Q')
+        df.index = df.index.strftime('%Y-Q%q')
 
     algo = 'psd'
     if cfg.get('algo'):
         algo = cfg['algo']
 
-    ts_df.reset_index(inplace=True)
+    title = f'Periodicity test by {algo}, [{df.index.min()} ~ {df.index.max()}]'
+    df.reset_index(inplace=True)
     match algo:
         case 'psd':
             # Periodogram(周期图), PSD(Power spectral density, 功率谱密度)
             # 傅里叶变换和频谱分析
-            freq, power = periodogram(ts_df[vfield])
+            freq, power = periodogram(df[vfield])
             freq = np.round(freq, 4)
             power = np.round(power, 4)
 
@@ -2456,16 +2639,17 @@ def plt_ts_cycle(tsf, cfg, df, fields):
             top_power.sort_index(inplace=True)
             # fig = px.line(x=freq, y=power, labels={'x': 'Freq', 'y': 'Power'})
             fig.add_trace(
-                go.Scatter(x=psd_df['freq'], y=psd_df['power'], name='PSD', showlegend=False, hovertemplate='%{y}<extra></extra>'))
+                go.Scatter(x=psd_df['freq'], y=psd_df['power'], name='PSD', hovertemplate='%{y}<extra></extra>'))
             fig.add_trace(
                 go.Scatter(x=top_power['freq'], y=top_power['power'], text=top_power['cycle'], name='Cycle',
                            mode='markers+text', textposition='top right', hovertemplate='%{text}<extra></extra>'))
-            fig.update_xaxes(title='Freq')
-            fig.update_yaxes(title='Power')
-            fig.update_layout(hovermode='x')
+            fig.update_xaxes(title=f'Frequency (1/{period})')
+            fig.update_yaxes(title=f'{vfield} (Power/Hz)')
+
         case '_':
             return fig
 
+    fig.update_layout(title=title, showlegend=False, hovermode='x')
     return fig
 
 
@@ -2476,22 +2660,34 @@ plt ts decomposition chart
 # doesn't support 'min' and 's'
 {"pid": "ts", "ts": "time", "field": "dena74",  "period": "D", "agg": "mean", "algo": "stl", "robust": true}
 """
-def plt_ts_decomp(tsf, cfg, df, fields):
+def plt_ts_decomp(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
 
     vfield = cfg['vf']
-    # aggregated by period (YS,QS,MS,W,D,h)
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    period = cfg.get('period')
+    seasonal_period = cfg.get('sp')
 
     if period.startswith('Y'):
         # show year only (don't show month and day for Y)
-        ts_df.index = ts_df.index.strftime('%Y')
+        df.index = df.index.strftime('%Y')
     elif period.startswith('Q'):
         # convert to period for getting quarters
-        ts_df.index = ts_df.index.to_period('Q')
-        ts_df.index = ts_df.index.strftime('%Y-Q%q')
+        df.index = df.index.to_period('Q')
+        df.index = df.index.strftime('%Y-Q%q')
+    elif 'min' in period:
+        df.index = df.index.strftime('%Y-%m-%d %H:%M')
+        # sp must be specified if minute period
+        if cfg.get('sp') is None:
+            cfg['sp'] = 60
+    elif 'T' in period:
+        df.index = df.index.strftime('%Y-%m-%d %H:%M')
+        if cfg.get('sp') is None:
+            # sp must be specified if minute period
+            custom_min = period.split('T')[0]
+            custom_min = int(custom_min)
+            cfg['sp'] = math.floor(60/custom_min)
 
     algo = 'stl'
     if cfg.get('algo'):
@@ -2501,29 +2697,87 @@ def plt_ts_decomp(tsf, cfg, df, fields):
     if cfg.get('robust'):
         robust = True
 
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True)
+    # detect trend
+    ts_seq = df[vfield].dropna()
+    X = np.arange(len(ts_seq)).reshape(-1, 1)
+    y = ts_seq.values.reshape(-1, 1)
+    lreg = LinearRegression().fit(X, y)
+    slope = lreg.coef_[0][0]
+    threshold = np.std(y) * 0.03
+    trending = 'no significant trend'
+    if slope > threshold:
+        trending = 'increasing trend'
+    elif slope < -threshold:
+        trending = 'decreasing trend'
+    sub_titles = [f'Trend Component ({trending})']
+
+    if cfg.get('sp'):
+        # user defined seasonal_period
+        seasonal_period = cfg['sp']
+        sub_titles.append(f'Seasonal Component (custom period: {seasonal_period}{period})')
+    else:
+        # find best period
+        resids = []
+        for p in range(2, 31):
+            try:
+                res = STL(df[vfield], period=p, robust=True).fit()
+                resid_std = np.std(res.resid)
+                resids.append((p, resid_std))
+            except:
+                continue
+        best_period = min(resids, key=lambda x: x[1])[0]
+        sub_titles.append(f'Seasonal Component (detected period: {best_period}{period})')
+
+    # check if it is add or multi model by residuals
+    decomp_add = sm_seasonal.seasonal_decompose(df[vfield], period=seasonal_period, model='additive')
+    resid_add = decomp_add.resid.dropna()
+    eval_add = dict(std=np.std(resid_add),
+                    mse=mean_squared_error([0]*len(resid_add), resid_add),
+                    adf_p=adfuller(resid_add)[1])
+
+    try:
+        # Multiplicative seasonality is not appropriate for zero and negative values
+        decomp_mul = sm_seasonal.seasonal_decompose(df[vfield], period=seasonal_period, model='multiplicative')
+        resid_mul = decomp_mul.resid.dropna()
+        eval_mul = dict(std=np.std(resid_mul),
+                        mse=mean_squared_error([0] * len(resid_mul), resid_mul),
+                        adf_p=adfuller(resid_mul)[1])
+        mode = 'additive'
+        if eval_mul['std'] < eval_add['std'] and eval_mul['mse'] < eval_add['mse']:
+            mode = 'multiplicative'
+        sub_titles.append(f'Residual Component ({mode} model)')
+    except:
+        sub_titles.append(f'Residual Component')
+
+    # make 3 subplots with title
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, subplot_titles=sub_titles)
     match algo:
         case 'stl':
             # Seasonal-Trend decomposition using LOESS (additive)
-            decomp = STL(ts_df[vfield], robust=robust).fit()
+            decomp = STL(df[vfield], period=seasonal_period, robust=robust).fit()
             # variance of residuals + seasonality
             resid_seas_var = (decomp.resid + decomp.seasonal).var()
             # seasonal strength
             strength = 1 - (decomp.resid.var() / resid_seas_var)
         case 'add':
             # additive
-            decomp = sm_seasonal.seasonal_decompose(ts_df[vfield], model='additive')
-
+            decomp = decomp_add
         case 'multi':
             # multiplicative
-            decomp = sm_seasonal.seasonal_decompose(ts_df[vfield], model='multiplicative')
+            decomp = decomp_mul
         case '_':
             return fig
 
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df[vfield], name=vfield, mode='lines'), 1, 1)
+    fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name=vfield, mode='lines'), 1, 1)
     fig.add_trace(go.Scatter(x=decomp.trend.index, y=decomp.trend.values, name='Trend', mode='lines'), 1, 1)
     fig.add_trace(go.Scatter(x=decomp.seasonal.index, y=decomp.seasonal.values, name='Season', mode='lines'), 2, 1)
     fig.add_trace(go.Scatter(x=decomp.resid.index, y=decomp.resid.values, name='Resid', mode='markers'), 3, 1)
+
+    fig.update_yaxes(row=1, col=1, title_text=vfield)
+    fig.update_yaxes(row=2, col=1, title_text=vfield)
+    fig.update_yaxes(row=3, col=1, title_text=vfield)
+    title = f'Decomposition by {algo}, [{df.index.min()} ~ {df.index.max()}]'
+    fig.update_layout(title=title, showlegend=False, xaxis_title='', hovermode='x')
     return fig
 
 
@@ -2532,7 +2786,7 @@ plt ts predict chart
 # ols(线性普通最小二乘), lowess(局部加权线性回归), rolling(移动平均线), ewm(指数加权移动平均), expanding(扩展窗)
 {"pid": "ts", "ts": "time", "field": "dena74",  "period": "MS", "agg": "mean", "algo": "ets", "trend": "add", "season": "add"}
 """
-def plt_ts_predict(tsf, cfg, df, fields):
+def plt_ts_predict(ts_df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None or cfg.get('period') is None:
         return fig
@@ -2551,7 +2805,7 @@ def plt_ts_predict(tsf, cfg, df, fields):
 
     future_step = 14
     vf = cfg['vf']
-    ts_df, period = ts_resample(tsf, cfg, df, fields)
+    period=cfg.get('period')
 
     match algo:
         case 'ses':
@@ -2700,11 +2954,12 @@ def plt_ts_predict(tsf, cfg, df, fields):
 plt ts anomaly detection chart
 {"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
 """
-def plt_ts_anomaly(tsf, cfg, df, fields):
+def plt_ts_anomaly(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None:
         return fig
 
+    tsf = df.index.name
     method = 'quantile'
     if cfg.get('method'):
         method = cfg['method']
@@ -2721,11 +2976,7 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
     if cfg.get('threshold'):
         threshold = cfg['threshold']
 
-    vf = cfg['vf']
-    if method == 'gaps':
-        df, period = ts_resample(tsf, cfg, df, fields, False)
-    else:
-        df, period = ts_resample(tsf, cfg, df, fields)
+    vf = cfg.get('vf')
     y_pred = None
     match method:
         case 'quantile':
@@ -2763,6 +3014,7 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
                 df = df[df[cfg.get('cat')].isin(cat_values)]
             y_pred = df[[vf]].isna().any(axis=1).astype(int).tolist()
         case 'diff':
+            # check change Point (break point)
             diff_coff = threshold if threshold else 2
             diff_df = df[vf].diff(periods=1)
             diff_df.fillna(0)
@@ -2873,14 +3125,24 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
     fig = make_subplots(rows=2, cols=1, row_heights=[600, 200], shared_xaxes=True, vertical_spacing=0.02)
     # index is ts and ts field is column
     df.reset_index(inplace=True)
-    # df.set_index(tsf, drop=False, inplace=True)
+
     if cfg.get('cat'):
-        # build lines with category
-        px_line = px.line(df, x=tsf, y=vf, color=cfg.get('cat'))
+        cf = cfg['cat']
+        # sort by name
+        sorted_name = df[cf].unique().astype(str)
+        sorted_name.sort()
         # add original data lines
-        [fig.add_trace(line, 1, 1) for line in px_line.data]
+        for name in sorted_name:
+            line_df = df[df[cf] == name]
+            fig.add_trace(go.Scatter(x=line_df[tsf], y=line_df[vf], name=name), 1, 1)
+        fig.update_yaxes(row=1, col=1, title_text=f'{vf} ({cfg.get("agg")})')
+        fig.update_layout(legend_title_text=f'{cf} ({len(sorted_name)})')
     else:
-        fig.add_trace(go.Scatter(x=df[tsf], y=df[vf], name=vf, hovertemplate='%{y}<extra></extra>'), 1, 1)
+        fig.add_trace(go.Scatter(x=df[tsf], y=df[vf], name=vf, showlegend=False), 1, 1)
+        fig.update_yaxes(row=1, col=1, title_text=f'{vf} ({cfg.get("agg")})')
+        if method in ['quantile', 'zscore']:
+            # add mean line as reference
+            fig.add_hline(y=df[vf].mean(), row=1, col=1, line_color='gray', annotation_text="mean")
 
     total_outliers = 0
     # outlier markers
@@ -2893,7 +3155,7 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
         if method != 'gaps':
             # add marker to original ts chart
             fig.add_trace(go.Scatter(x=outlier_df[tsf], y=outlier_df[vf], name='outlier', mode='markers',
-                                     marker=dict(color='red')), 1, 1)
+                                     showlegend=False, marker=dict(color='red')), 1, 1)
 
         outlier_df = outlier_df[[tsf, 'outlier']]
         pos_df = outlier_df[outlier_df['outlier'] > 0]
@@ -2905,14 +3167,15 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
             alert_df.reset_index(inplace=True, drop=False)
             # outliers with binary index (0, 1 or -1)
             fig.add_trace(go.Scatter(x=alert_df[tsf], y=alert_df['outlier'], name='alert', mode='markers',
-                                     marker=dict(color='red')), 2, 1)
+                                     showlegend=False, marker=dict(color='red')), 2, 1)
             [fig.add_shape(type="line", x0=alert_df[tsf].loc[i], y0=0, x1=alert_df[tsf].loc[i],
                            y1=alert_df['outlier'].loc[i], line_color='gray', row=2, col=1) for i in alert_df.index]
+            fig.add_hline(y=0, row=2, col=1, line_dash='dash', line_color='gray')
 
 
 
-
-    if method in ['quantile', 'zscore', 'diff', 'rolling']:
+    # disable it for performance when there are too many lines
+    if method in ['quantile_XXX', 'zscore_XXX', 'diff_XXX', 'rolling_XXX']:
         # add tolerance area
         fig.add_trace(go.Scatter(x=df[tsf], y=th_lower, name='lower', showlegend=False,
                                  line=dict(color='rgba(255,228,181,0.2)', width=0, dash='dot')), 1, 1)
@@ -2934,6 +3197,7 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
                 fig.add_trace(
                     go.Scatter(x=reshaped_df.index, y=reshaped_df[vf], name='Reshape', hovertemplate='%{y}<extra></extra>'), 2, 1)
 
+    fig.update_yaxes(row=2, col=1, title=dict(text='outlier count'))
     fig.update_layout(title=f'Outliers: {total_outliers}/{len(y_pred)}, Alog: {method}')
     return fig
 
@@ -2941,11 +3205,12 @@ def plt_ts_anomaly(tsf, cfg, df, fields):
 plt ts similarity detection chart
 {"pid": "ts", "ts": "time", "field": "dena74",  "method": "kmeans"}
 """
-def plt_ts_similarity(tsf, cfg, df, fields):
+def plt_ts_similarity(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('period') is None:
         return fig
 
+    ts_name=df.index.name
     num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
     method = cfg.get('method', 'kmeans')
     metric = cfg.get('metric', 'euclidean')
@@ -2954,6 +3219,8 @@ def plt_ts_similarity(tsf, cfg, df, fields):
     cluster_id = cfg.get('page', 0)
     vf = cfg.get('vf')
     cf = cfg.get('cat')
+    if cf is None:
+        return fig
 
     if cf and vf:
         num_fields = [vf]
@@ -2968,20 +3235,28 @@ def plt_ts_similarity(tsf, cfg, df, fields):
     else:
         df = df[num_fields]
 
-    # resample
-    df, period = ts_resample2(tsf, cfg, df, fields)
+    # shape (n_samples, n_features, n_timesteps)
+    d3_data = []
+    d3_labels = []
+    for name, group in df.groupby(cf):
+        ffv = group[num_fields].T.values
+        d3_data.append(ffv)
+        d3_labels.append(name)
+    X_np = np.stack(d3_data)
+
     cluster_ids = None
     match method:
         case 'kmeans':
             number_df = df[num_fields]
-            d3_data = number_df.values.T.reshape((len(num_fields), 1, len(df)))
+            # shape (n_samples, n_features, n_timesteps)
+            # X_np = number_df.values.T.reshape(len(num_fields), 1, len(df))
             clst = TimeSeriesKMeans(n_clusters=clusters, metric='euclidean', max_iter=500)
-            clst.fit(d3_data)
+            clst.fit(X_np)
             cluster_ids = clst.labels_
             cluster_cnt = dict(Counter(cluster_ids))
             cluster_dict = {}
             for idx, cluster in enumerate(cluster_ids):
-                cluster_dict[number_df.columns[idx]] = cluster
+                cluster_dict[d3_labels[idx]] = cluster
         case 'dbscan':
             # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
             #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
@@ -2999,20 +3274,26 @@ def plt_ts_similarity(tsf, cfg, df, fields):
 
     # convert wide table to long table
     df.reset_index(inplace=True)
+    # sort by name
+    sorted_name = df[cf].unique().astype(str)
+    sorted_name.sort()
+    sorted_dict = {k: i for i, k in enumerate(sorted_name)}
+    '''
     df_melted = pd.melt(df,
                         id_vars=['ts'],  # keep index as id
                         value_vars=num_fields,  # put value of these columns into one column(value_name)
                         var_name='cat',  # contain value_vars
                         value_name='value')  # contain value value_vars
-
-    df_melted['cluster'] = df_melted['cat'].map(cluster_dict)
-    fig = px.line(df_melted, x="ts", y="value", color="cat", facet_row="cluster")
-    fig.for_each_annotation(lambda a: a.update(text=cluster_cnt[int(a.text.split("=")[-1])]))
-
-    if clusters < 3:
-        fig.update_layout(legend_title_text=f'Cat ({len(num_fields)})', xaxis_title='')
+    '''
+    df['cluster'] = df[cf].map(cluster_dict)
+    if clusters < 4:
+        col_wrap = 1
     else:
-        fig.update_layout(legend_title_text=f'Cat ({len(num_fields)})', xaxis_title='', height=clusters * 300)
+        col_wrap = 2
+    fig = px.line(df, x=ts_name, y=num_fields[0], color=cf, facet_col="cluster", facet_col_wrap=col_wrap)
+    fig.for_each_annotation(lambda a: a.update(text=cluster_cnt[int(a.text.split("=")[-1])]))
+    fig.for_each_trace(lambda trace: trace.update(legendrank=sorted_dict[trace.name]))
+    fig.update_layout(title=title, legend_title_text=f'{cf} ({len(sorted_name)})', xaxis_title='')
     return fig
 
 
@@ -3020,7 +3301,7 @@ def plt_ts_similarity(tsf, cfg, df, fields):
 plt ts active noice reduction chart
 {"pid": "ts", "ts": "time", "field": "dena74",  "method": "zscore"}
 """
-def plt_ts_anc(tsf, cfg, df, fields):
+def plt_ts_anc(df, cfg, fields):
     fig = go.Figure()
     if cfg.get('vf') is None:
         return fig
@@ -3042,7 +3323,6 @@ def plt_ts_anc(tsf, cfg, df, fields):
         threshold = cfg['threshold']
 
     vf = cfg['vf']
-    df, period = ts_resample(tsf, cfg, df, fields)
     y_pred = None
     match method:
         case 'fft':
@@ -3092,70 +3372,99 @@ def plt_ts_anc(tsf, cfg, df, fields):
     # top 5 freq markers
     fig.add_trace(go.Scatter(x=top_power['freq'], y=top_power['power'], text=top_power['freq'], name='Freq',
                              textposition='top right', showlegend=False, mode='markers+text', hovertemplate='%{y}<extra></extra>'), 2, 1)
-    fig.update_xaxes(row=2, col=1, title='Freq')
+    fig.update_xaxes(row=2, col=1, title=f'Frequency (1/{cfg.get("period")})')
+    fig.update_yaxes(row=2, col=1, title=f'{vf} (Power/Hz)')
+    fig.update_yaxes(row=1, col=1, title=f'{vf} ({cfg.get("agg")})')
     fig.update_layout(hovermode='x')
     return fig
 
 
+"""
+resample time series based on config 'period' and 'agg'
+"""
+def ts_resample(df: pd.DataFrame, cfg: dict, fields: list, trans: dict = None, fill: bool = True):
+    ts_name = df.index.name
+    if cfg.get('period') is None and cfg.get('agg'):
+        # convert ts index to a column for groupby
+        df.reset_index(inplace=True)
+        # group by ts and cat
+        group_fields = [ts_name, cfg['cat']] if cfg.get('cat') else [ts_name]
+        # aggregate data
+        df = df.groupby(group_fields).agg(cfg['agg'])
+        # convert multiple index to columns
+        df.reset_index(inplace=True)
+        # set ts field as index
+        df.set_index(ts_name, inplace=True)
+        # sort timestamp
+        df.sort_index(inplace=True)
+        return df, None
 
-def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list, fill: bool = True):
-    period = cfg.get('period', None)
-    if period is None:
-        return df, period
-
+    period = cfg.get('period')
+    period_def = dict(s=0, min=1, h=2, D=3, W=4, MS=5, QS=6, YS=7)
     # aggregated by period (YS,QS,MS,W,D,h,min,s)
     # agg: sum, mean, median, min, max, std, count
-    agg = cfg['agg'] if cfg.get('agg') else 'mean'
-    for field in fields:
-        # find config of ts field to confirm period
-        if field.get('name') == tsf and field.get('gap'):
-            period_min = 1
-            if field.get('gap'):
-                period_min = int(field['gap'])
-            resample_min = 1
-            if field.get('resample'):
-                resample_min = int(field['resample'])
-            final_period = max(period_min, resample_min)
-            if final_period < 60 and (period == 'min' or period == 's'):
-                # update period to min period of this time series
-                period = f'{final_period}T'
-                break
-            elif final_period > 60 and final_period < 1440 and (period == 'h' or period == 'min' or period == 's'):
-                # update period to min period of this time series
-                period_h = math.ceil(final_period / 60)
-                period = f'{period_h}H'
-                break
+    agg = cfg.get('agg', 'mean')
 
-    resampled_df = None
+    ts_field = [field for field in fields if field.get('name') == ts_name][0]
+    # find config of ts field to confirm period
+    if ts_field.get('name') == ts_name:
+        gap_min = 1
+        interval_min = 1
+        if ts_field.get('gap'):
+            # minimal gap between two points
+            gap_min = int(ts_field['gap'])
+        if ts_field.get('resample'):
+            # user defined minimal interval in dataset
+            interval_min = int(ts_field['resample'])
+
+        # get max resample period from the two values (unit: minute)
+        resample_period = max(gap_min, interval_min)
+        if resample_period < 60 and period_def[period] < 2:
+            # update period to max minute
+            period = f'{resample_period}T'
+        elif resample_period > 60 and resample_period < 1440 and period_def[period] < 3:
+            # update period to max hour
+            period_h = math.ceil(resample_period / 60)
+            period = f'{period_h}H'
+        elif resample_period > 1440 and resample_period < 10080 and period_def[period] < 4:
+            # update period to max hour
+            period_day = math.ceil(resample_period / 1440)
+            period = f'{period_day}D'
+        elif resample_period > 10080 and resample_period < 43200 and period_def[period] < 5:
+            # update period to max hour
+            period_wk = math.ceil(resample_period / 10080)
+            period = f'{period_wk}W'
+
+
+    # create a full time index
+    full_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq=period)
+    # both config['vf'] and config['cat'] are list
     if cfg.get('cat'):
         cat_field = cfg['cat']
-        resampled_df = df.groupby(cat_field).resample(period).agg(agg)
+        resampled_df = df.groupby(cat_field).apply(lambda g: g.resample(period).agg(agg).reindex(full_range))
         resampled_df.reset_index(level=cat_field, drop=False, inplace=True)
     else:
-        cat_fields = [field['name'] for field in fields if field['attr'] == 'cat']
-        num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
-        if len(cat_fields) == 0 or len(df.columns) == 1 or len(df.columns) < len(cat_fields):
-            resampled_df = df.resample(period).agg(agg)
-        else:
-            grouped = df.groupby(cat_fields)
-            resampled_list = []
-            for name, group in grouped:
-                resampled = group.resample(period)[num_fields].agg(agg)
-                group_mean = group[num_fields].mean()
-                resampled = resampled.fillna(group_mean)
-                resampled[cat_fields] = name
-                resampled_list.append(resampled)
-            resampled_df = pd.concat(resampled_list)
-            resampled_df.sort_index(inplace=True)
+        # all are value fields
+        resampled_df = df.resample(period).agg(agg).reindex(full_range)
 
+    resampled_df.index.name = ts_name
     if fill:
-        # value field
+        # value fields
         num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
         # handle missing value
         for field in num_fields:
             vf = field['name']
-            if vf in resampled_df.columns and resampled_df[vf].isnull().any() and field.get('miss'):
-                match field['miss']:
+            if vf in resampled_df.columns and resampled_df[vf].isnull().any():
+                # this field has null value after resampling
+                if field.get('miss'):
+                    # high priority is field config
+                    miss_operation = field['miss']
+                elif trans and trans.get('miss'):
+                    miss_operation = trans['miss']
+                else:
+                    continue
+
+                match miss_operation:
                     case 'mean':
                         resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mean())
                     case 'median':
@@ -3164,77 +3473,14 @@ def ts_resample(tsf: str, cfg: any, df: pd.DataFrame, fields: list, fill: bool =
                         resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mode())
                     case 'prev':
                         resampled_df[vf] = resampled_df[vf].ffill()
+                        resampled_df[vf] = resampled_df[vf].bfill()
                     case 'next':
                         resampled_df[vf] = resampled_df[vf].bfill()
+                        resampled_df[vf] = resampled_df[vf].ffill()
                     case 'zero':
                         resampled_df[vf] = resampled_df[vf].fillna(value=0)
+    resampled_df.sort_index(inplace=True)
     return resampled_df, period
-
-
-
-def ts_resample2(tsf: str, cfg: any, df: pd.DataFrame, fields: list):
-    period = cfg.get('period', None)
-    if period is None:
-        return df, period
-
-    # aggregated by period (YS,QS,MS,W,D,h,min,s)
-    # agg: sum, mean, median, min, max, std, count
-    agg = cfg['agg'] if cfg.get('agg') else 'mean'
-    for field in fields:
-        # find config of ts field to confirm period
-        if field.get('name') == tsf and field.get('gap'):
-            period_min = 1
-            if field.get('gap'):
-                period_min = int(field['gap'])
-            resample_min = 1
-            if field.get('resample'):
-                resample_min = int(field['resample'])
-            final_period = max(period_min, resample_min)
-            if final_period < 60 and (period == 'min' or period == 's'):
-                # update period to min period of this time series
-                period = f'{final_period}T'
-                break
-            elif final_period > 60 and final_period < 1440 and (period == 'h' or period == 'min' or period == 's'):
-                # update period to min period of this time series
-                period_h = math.ceil(final_period / 60)
-                period = f'{period_h}H'
-                break
-
-
-    resampled_df = None
-    if cfg.get('cat'):
-        cat_field = cfg['cat']
-        resampled_df = df.groupby(cat_field).resample(period).agg(agg)
-        resampled_df.reset_index(level=cat_field, drop=False, inplace=True)
-    else:
-        vf = cfg.get('vf')
-        if vf:
-            resampled_df = df[[vf]].resample(period).agg(agg)
-        else:
-            # keep numeric fields only
-            num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
-            resampled_df = df[num_fields].resample(period).agg(agg)
-
-    # handle missing value
-    num_fields = [field for field in fields if field['attr'] in ['conti', 'disc']]
-    for field in num_fields:
-        vf = field['name']
-        if vf in resampled_df.columns and resampled_df[vf].isnull().any() and field.get('miss'):
-            match field['miss']:
-                case 'mean':
-                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mean())
-                case 'median':
-                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].median())
-                case 'mode':
-                    resampled_df[vf] = resampled_df[vf].fillna(resampled_df[vf].mode())
-                case 'prev':
-                    resampled_df[vf] = resampled_df[vf].ffill()
-                case 'next':
-                    resampled_df[vf] = resampled_df[vf].bfill()
-                case 'zero':
-                    resampled_df[vf] = resampled_df[vf].fillna(value=0)
-    return resampled_df, period
-
 
 
 """

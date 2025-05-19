@@ -7,11 +7,13 @@ from apps.ml.eda.chart_plotly import plt_stat_chart, plt_dist_chart, plt_corr_ch
 """
 return plotly config
 """
-async def eda_build_chart(tier: str, kind: str, config, df: pd.DataFrame, fields):
+async def eda_build_chart(tier: str, kind: str, config, df: pd.DataFrame, fields, transform):
     # use plotly for Pandas plotting
     # pd.options.plotting.backend = "plotly"
 
-    valid_f = [field for field in fields if field.get('omit') is None]
+    # get valid fields (some columns are removed when data is loaded if they have all null value)
+    df_cols = df.columns.tolist()
+    valid_f = [field for field in fields if ('omit' not in field) and (field['name'] in df_cols)]
     resp = dict(type='plotly', zip=True, tier=tier, kind=kind, data=None)
     # generate chart based on kind
     match tier:
@@ -37,7 +39,7 @@ async def eda_build_chart(tier: str, kind: str, config, df: pd.DataFrame, fields
             fig = plt_reduction_chart(kind, config, df, valid_f)
         case 'ts':
             # Time series group
-            fig = plt_ts_chart(kind, config, df, valid_f)
+            fig = plt_ts_chart(kind, config, df, valid_f, transform)
         case _:
             fig = None
 
