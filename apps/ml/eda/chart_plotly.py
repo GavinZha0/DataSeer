@@ -25,7 +25,7 @@ from scipy import stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, silhouette_score
 from sktime.clustering.k_means import TimeSeriesKMeans
 from sktime.forecasting.timesfm_forecaster import TimesFMForecaster
 from statsmodels.tsa.stattools import acf, pacf, adfuller, kpss
@@ -525,6 +525,9 @@ def plt_ts_chart(kind, config, df, fields, transform):
         vf = value_fields
 
     # vf is list but cf is string
+    if cf:
+        # sort by ts field and cat field
+        df.sort_values(by=[ts_field, cf], key=lambda x: x.astype(str) if x.name == cf else x, inplace=True)
     # set ts field as index
     df.set_index(ts_field, inplace=True)
 
@@ -586,6 +589,7 @@ def plt_ts_chart(kind, config, df, fields, transform):
             # anomaly detection
             fig = plt_ts_anomaly(df, config, final_fields)
         case 'similarity':
+            config['vf'] = vf
             df, config['period'] = ts_resample(df, config, fields, transform, True)
             # similarity detection
             fig = plt_ts_similarity(df, config, final_fields)
@@ -2050,7 +2054,6 @@ def plt_ts_series(df, cfg, fields):
     # category/value field
     cat_field = cfg.get('cat')
     v_fields = cfg['vf']
-    v_fields.sort()
 
     line_with_gaps = cfg.get('gap', False)
     connected = True
@@ -2065,8 +2068,6 @@ def plt_ts_series(df, cfg, fields):
     if cat_field:
         df.reset_index(inplace=True)
         cat_total = df[cat_field].nunique()
-        sorted_cat = df[cat_field].unique().astype(str)
-        sorted_cat.sort()
         if len(v_fields) == 1:
             if cfg.get('solo'):
                 fig = px.line(df, x=ts_name, y=v_fields[0], facet_col=cat_field, facet_col_wrap=2,
@@ -2074,7 +2075,7 @@ def plt_ts_series(df, cfg, fields):
                 fig.update_layout(legend_title_text=f'{cat_field} ({cat_total})',
                                   height=800 if cat_total < 3 else (math.ceil(cat_total/2) * 300))
             else:
-                fig = px.line(df, x=ts_name, y=v_fields[0], color=cat_field, category_orders={cat_field: sorted_cat})
+                fig = px.line(df, x=ts_name, y=v_fields[0], color=cat_field)
                 fig.update_layout(legend_title_text=f'{cat_field} ({cat_total})')
             fig.for_each_xaxis(lambda x: x.update(title=''))
         else:
@@ -2129,7 +2130,9 @@ def plt_ts_trend(df, cfg, fields):
     if cfg.get('vf') is None or cfg.get('period') is None:
         return None
 
+    method = cfg.get('method', 'ols')
     vfield = cfg['vf']
+    cfield = cfg.get('cat')
     connected = False
     if cfg.get('connected'):
         connected = cfg['connected']
@@ -2156,40 +2159,100 @@ def plt_ts_trend(df, cfg, fields):
     if win <= 0:
         win = 1
 
-    fig = go.Figure()
-    # ts_df.reset_index(inplace=True)
-    # 线性
-    fig = px.scatter(df, x=df.index, y=vfield, trendline='ols')
-    df['ols'] = fig.data[1].y
+    cat_pv = dict()
+    match method:
+        case 'ols':
+            # 线性
+            if cfg.get('diff'):
+                fig = px.scatter(df, x=df.index, y=vfield, color=cfield, trendline='ols')
+            else:
+                fig = px.scatter(df, x=df.index, y=vfield, facet_col=cfield, facet_col_wrap=2, trendline='ols',
+                             trendline_color_override='orange')
+                if cfield:
+                    df['ts_min'] = (df.index - df.index.min()).total_seconds() / 60
+                    linear_model = smf.ols(f'{vfield} ~ ts_min * {cfield}', data=df).fit()
+                    for k, v in linear_model.pvalues.items():
+                        if k.startswith('ts_min:'):
+                            sub_k = k.split('T.')[1]
+                            cat_k = sub_k[0:-1]
+                            if v < 0.001:
+                                cat_pv[cat_k] = '***'
+                            elif v < 0.01:
+                                cat_pv[cat_k] = '**'
+                            elif v < 0.05:
+                                cat_pv[cat_k] = '*'
+                            elif v < 0.1:
+                                cat_pv[cat_k] = '.'
+                            else:
+                                cat_pv[cat_k] = '-'
+        case  'lowess':
+            # The fraction of the data used when estimating each y-value.
+            # 平滑
+            if cfg.get('diff'):
+                fig = px.scatter(df, x=df.index, y=vfield, color=cfield, trendline='lowess',
+                                 trendline_options=dict(frac=frac))
+            else:
+                fig = px.scatter(df, x=df.index, y=vfield, facet_col=cfield, facet_col_wrap=2, trendline='lowess',
+                             trendline_options=dict(frac=frac), trendline_color_override='orange')
+        case  'rolling':
+            # 中心滞后，权重相同
+            if cfg.get('diff'):
+                fig = px.scatter(df, x=df.index, y=vfield, color=cfield, trendline='rolling',
+                                 trendline_options=dict(window=win, min_periods=1))
+            else:
+                fig = px.scatter(df, x=df.index, y=vfield, facet_col=cfield, facet_col_wrap=2, trendline='rolling',
+                             trendline_options=dict(window=win, min_periods=1), trendline_color_override='orange')
+        case 'ewm':
+            # 中心滞后，权重衰减
+            if cfg.get('diff'):
+                fig = px.scatter(df, x=df.index, y=vfield, color=cfield, trendline='ewm',
+                                 trendline_options=dict(halflife=win))
+            else:
+                fig = px.scatter(df, x=df.index, y=vfield, facet_col=cfield, facet_col_wrap=2, trendline='ewm',
+                             trendline_options=dict(halflife=win), trendline_color_override='orange')
+        case 'polynomial':
+            # show original data
+            fig = px.scatter(df, x=df.index, y=vfield, facet_col=cfield, facet_col_wrap=2)
+            # it is OLS when degree=1
+            forecaster = PolynomialTrendForecaster(degree=int(1 // frac))
+            if cfield:
+                df['trend'] = None
+                u_cats = df[cfield].unique().astype(str)
+                for cat in u_cats:
+                    cat_df = df[df[cfield] == cat][vfield]
+                    prange = pd.date_range(cat_df.index.min(), periods=len(cat_df), freq=cfg['period'])
+                    trend_v = forecaster.fit(cat_df).predict(fh=prange)
+                    df.loc[df[cfield] == cat, 'trend'] = trend_v.tolist()
+                lines = px.line(df, x=df.index, y='trend', facet_col=cfield, facet_col_wrap=2, hover_data=[],
+                                    color_discrete_sequence=['orange'])
+                fig.add_traces(lines.data)
+            else:
+                prange = pd.date_range(df.index.min(), periods=len(df), freq=cfg['period'])
+                df['poly'] = forecaster.fit(df[vfield]).predict(fh=prange)
+                fig.add_scatter(x=df.index, y=df['trend'], name='Polynomial', showlegend=False, line_color='orange')
 
-    # The fraction of the data used when estimating each y-value.
-    # 平滑
-    fig = px.scatter(df, x=df.index, y=vfield, trendline='lowess', trendline_options=dict(frac=frac))
-    df['lowess'] = fig.data[1].y
+    if cfg.get('diff') and cfield:
+        # add all trendlines to one chart
+        for trace in fig.data:
+            # extract data of trendline from trace
+            if 'trendline' in trace.hovertemplate:
+                df.loc[df[cfield] == trace.name, 'trend'] = trace.y
+        # show all trendlines without original data
+        fig = px.line(df, x=df.index, y="trend", color=cfield)
+    elif connected:
+        fig.update_traces(mode='lines')
 
-    # 中心滞后，权重相同
-    fig = px.scatter(df, x=df.index, y=vfield, trendline='rolling', trendline_options=dict(window=win, min_periods=1))
-    df['rolling'] = fig.data[1].y
+    if cfield and method == 'ols':
+        for i, ann in enumerate(fig.layout.annotations):
+            cat_n = ann.text.split('=')[-1]
+            if cat_n in cat_pv:
+                ann.text += f' ({cat_pv[cat_n]})'
+            else:
+                ann.text += ' (reference)'
 
-    # 中心滞后，权重衰减
-    fig = px.scatter(df, x=df.index, y=vfield, trendline='ewm', trendline_options=dict(halflife=win))
-    df['ewm'] = fig.data[1].y
-
-    # it is OLS when degree=1
-    forecaster = PolynomialTrendForecaster(degree=int(1//frac))
-    prange = pd.date_range(df.index.min(), periods=len(df), freq=cfg['period'])
-    df['polynomial'] = forecaster.fit(df[vfield]).predict(fh=prange)
-
-    # time series line
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df[vfield], name=vfield, connectgaps=connected))
-    fig.add_trace(go.Scatter(x=df.index, y=df['ols'], name='Ols'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['lowess'], name='Lowess'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['rolling'], name='Rolling'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['ewm'], name='Ewm'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['polynomial'], name='Polynomial'))
-    title = f'{vfield} trending, [{df.index.min()} ~ {df.index.max()}]'
-    fig.update_layout(title=title, yaxis_title=f'{vfield} ({cfg["agg"]})', hovermode='x')
+    title = f'Ts trending of {method}, [{df.index.min()} ~ {df.index.max()}]'
+    fig.for_each_xaxis(lambda x: x.update(title=''))
+    fig.update_layout(title=title, yaxis_title=vfield, hovermode='x')
     return fig
 
 
@@ -2254,8 +2317,6 @@ def plt_ts_freq(df, cfg, fields):
         agg = cfg['agg']
 
     ts_name = df.index.name
-    min_ts = df.index.min()
-    max_ts = df.index.max()
     title = f"{vfield} frequency, [{df.index.min()} ~ {df.index.max()}]"
     fig = make_subplots(rows=3, cols=2, specs=[[{}, {}], [{}, {}], [{"colspan": 2}, None]],
                         subplot_titles=['Quarterly', 'Monthly', 'Weekly', 'Hourly', 'Daily'])
@@ -2553,7 +2614,7 @@ def plt_ts_distribution(df, cfg, fields):
             fig = px.scatter(mean_std, x=ts_name, y='mean', error_y='std', facet_col=cfield, facet_col_wrap=2,
                              category_orders={cfield: u_cats}, labels={ts_name: '', 'mean': vfield})
             lines = px.line(mean_std, x=ts_name, y='mean', facet_col=cfield, facet_col_wrap=2, hover_data=[],
-                            category_orders={cfield: u_cats}, color_discrete_sequence=['green'], labels={ts_name: '', 'mean': vfield})
+                            category_orders={cfield: u_cats}, color_discrete_sequence=['orange'], labels={ts_name: '', 'mean': vfield})
             fig.add_traces(lines.data)
         else:
             # mean and std of every ts group
@@ -2564,23 +2625,20 @@ def plt_ts_distribution(df, cfg, fields):
             mean_std['std'] = mean_std['std'].round(3)
             # show mean + std
             fig = px.scatter(mean_std, x=ts_name, y='mean', error_y='std')
-            fig.add_traces(px.line(mean_std, x=ts_name, y='mean', hover_data=[], color_discrete_sequence=['green']).data)
+            fig.add_traces(px.line(mean_std, x=ts_name, y='mean', hover_data=[], color_discrete_sequence=['orange']).data)
     else:
         # keep all original data points for box/violin without ts resample
         df.reset_index(inplace=True)
         df[ts_name] = df[ts_name].dt.strftime(ts_format)
         if cfield:
-            # sort categories for facet displaying
-            u_cats = df[cfield].unique().astype(str)
-            u_cats.sort()
             if cfg['disp'] == 'violin':
                 # show violin following ascending order
                 fig = px.violin(df, x=ts_name, y=vfield, facet_col=cfield, facet_col_wrap=2, box=True, labels={ts_name: ''},
-                                points=('outliers' if outlier else False), category_orders={cfield: u_cats})
+                                points=('outliers' if outlier else False))
             else:
                 # show box following ascending order
                 fig = px.box(df, x=ts_name, y=vfield, facet_col=cfield, facet_col_wrap=2, labels={ts_name: ''},
-                             points=('outliers' if outlier else False), category_orders={cfield: u_cats})
+                             points=('outliers' if outlier else False))
         else:
             if cfg['disp'] == 'violin':
                 # show violin following ascending order
@@ -2617,7 +2675,7 @@ def plt_ts_cycle(df, cfg, fields):
         algo = cfg['algo']
 
     title = f'Periodicity test by {algo}, [{df.index.min()} ~ {df.index.max()}]'
-    df.reset_index(inplace=True)
+    # df.reset_index(inplace=True)
     match algo:
         case 'psd':
             # Periodogram(周期图), PSD(Power spectral density, 功率谱密度)
@@ -2625,19 +2683,13 @@ def plt_ts_cycle(df, cfg, fields):
             freq, power = periodogram(df[vfield])
             freq = np.round(freq, 4)
             power = np.round(power, 4)
-
             psd_df = pd.DataFrame({'freq': freq, 'power': power})
-            psd_df = psd_df.sort_values(by='power', ascending=False)
             # get top 5 by power
-            top_power = psd_df.head(5)
+            top_power = psd_df.nlargest(5, 'power')
             top_power = top_power[top_power['power'] > 0]
             # get cycles
             top_power['cycle'] = np.round(1 / top_power['freq'], 1)
-
-            # sort by index
-            psd_df.sort_index(inplace=True)
-            top_power.sort_index(inplace=True)
-            # fig = px.line(x=freq, y=power, labels={'x': 'Freq', 'y': 'Power'})
+            # build chart
             fig.add_trace(
                 go.Scatter(x=psd_df['freq'], y=psd_df['power'], name='PSD', hovertemplate='%{y}<extra></extra>'))
             fig.add_trace(
@@ -3129,14 +3181,13 @@ def plt_ts_anomaly(df, cfg, fields):
     if cfg.get('cat'):
         cf = cfg['cat']
         # sort by name
-        sorted_name = df[cf].unique().astype(str)
-        sorted_name.sort()
+        cat_name = df[cf].unique().astype(str)
         # add original data lines
-        for name in sorted_name:
+        for name in cat_name:
             line_df = df[df[cf] == name]
             fig.add_trace(go.Scatter(x=line_df[tsf], y=line_df[vf], name=name), 1, 1)
         fig.update_yaxes(row=1, col=1, title_text=f'{vf} ({cfg.get("agg")})')
-        fig.update_layout(legend_title_text=f'{cf} ({len(sorted_name)})')
+        fig.update_layout(legend_title_text=f'{cf} ({len(cat_name)})')
     else:
         fig.add_trace(go.Scatter(x=df[tsf], y=df[vf], name=vf, showlegend=False), 1, 1)
         fig.update_yaxes(row=1, col=1, title_text=f'{vf} ({cfg.get("agg")})')
@@ -3207,39 +3258,24 @@ plt ts similarity detection chart
 """
 def plt_ts_similarity(df, cfg, fields):
     fig = go.Figure()
-    if cfg.get('period') is None:
+    if cfg.get('cat') is None or cfg.get('period') is None:
         return fig
 
     ts_name=df.index.name
-    num_fields = [field['name'] for field in fields if field['attr'] in ['conti', 'disc']]
     method = cfg.get('method', 'kmeans')
     metric = cfg.get('metric', 'euclidean')
     threshold = cfg.get('threshold')
     clusters = cfg.get('clusters', 2)
-    cluster_id = cfg.get('page', 0)
+
+    # vf is list and cf is string
     vf = cfg.get('vf')
     cf = cfg.get('cat')
-    if cf is None:
-        return fig
-
-    if cf and vf:
-        num_fields = [vf]
-        df = df[[cf, vf]]
-    elif vf:
-        num_fields = [vf]
-        df = df[[vf]]
-    elif cf:
-        selected_field = num_fields.copy()
-        selected_field.append(cf)
-        df = df[selected_field]
-    else:
-        df = df[num_fields]
 
     # shape (n_samples, n_features, n_timesteps)
     d3_data = []
     d3_labels = []
     for name, group in df.groupby(cf):
-        ffv = group[num_fields].T.values
+        ffv = group[vf].T.values
         d3_data.append(ffv)
         d3_labels.append(name)
     X_np = np.stack(d3_data)
@@ -3247,8 +3283,10 @@ def plt_ts_similarity(df, cfg, fields):
     cluster_ids = None
     match method:
         case 'kmeans':
-            number_df = df[num_fields]
-            # shape (n_samples, n_features, n_timesteps)
+            # shape (n_samples, n_features, n_timesteps) = [n_instances, n_dimensions, series_length]
+            # n_samples = n_instances = n_categories
+            # 单变量ex: 1个数值域特征，每天24个时间点，共5天的数据->(5,1,24)，按时间天聚类
+            # 多变量ex: 1个类别域有3个类别值，每个类别6个数值特征，每个特征有24个时间点->(3,6,24)，按类别聚类
             # X_np = number_df.values.T.reshape(len(num_fields), 1, len(df))
             clst = TimeSeriesKMeans(n_clusters=clusters, metric='euclidean', max_iter=500)
             clst.fit(X_np)
@@ -3257,6 +3295,8 @@ def plt_ts_similarity(df, cfg, fields):
             cluster_dict = {}
             for idx, cluster in enumerate(cluster_ids):
                 cluster_dict[d3_labels[idx]] = cluster
+            cluster_center = clst.cluster_centers_
+            silhouette_avg = silhouette_score(X_np.reshape(X_np.shape[0], -1), clst.labels_)
         case 'dbscan':
             # Density-Based Spatial Clustering of Applications with Noise，具有噪声的基于密度的聚类方法(cluster-based)
             #  ‘braycurtis’, ‘canberra’, ‘chebyshev’, ‘cityblock’, ‘correlation’, ‘cosine’, ‘dice’, ‘euclidean’,
@@ -3270,30 +3310,55 @@ def plt_ts_similarity(df, cfg, fields):
         case '_':
             return fig
 
-    title = f'Clustering method: {method}, Clusters: {clusters}'
-
-    # convert wide table to long table
-    df.reset_index(inplace=True)
-    # sort by name
-    sorted_name = df[cf].unique().astype(str)
-    sorted_name.sort()
-    sorted_dict = {k: i for i, k in enumerate(sorted_name)}
-    '''
-    df_melted = pd.melt(df,
-                        id_vars=['ts'],  # keep index as id
-                        value_vars=num_fields,  # put value of these columns into one column(value_name)
-                        var_name='cat',  # contain value_vars
-                        value_name='value')  # contain value value_vars
-    '''
+    title = f'Clustering method: {method}, Clusters: {clusters}, Silhouette: {silhouette_avg:.2f}'
+    # sorted category names
+    cat_name = df[cf].unique().astype(str)
     df['cluster'] = df[cf].map(cluster_dict)
     if clusters < 4:
         col_wrap = 1
     else:
         col_wrap = 2
-    fig = px.line(df, x=ts_name, y=num_fields[0], color=cf, facet_col="cluster", facet_col_wrap=col_wrap)
+
+
+    if len(vf) == 1:
+        df['center'] = None
+        # show lines by clusters
+        fig = px.line(df, x=df.index, y=vf[0], color=cf, facet_col='cluster', facet_col_wrap=col_wrap)
+        # show cluster center for single value field
+        for k, v in cluster_dict.items():
+            # add data to df
+            df.loc[df[cf].astype(str) == k, 'center'] = cluster_center[v][0].tolist()
+        # build center lines
+        lines = px.line(df, x=df.index, y='center', facet_col='cluster', facet_col_wrap=col_wrap,
+                    color_discrete_sequence=['gray'], line_dash_sequence=['dot'])
+        fig.add_traces(lines.data)
+    elif cfg.get('d2'):
+        df['d0'] = None
+        df['d1'] = None
+        pca = PCA(n_components=2)
+        for k, v in cluster_dict.items():
+            pca_data = pca.fit_transform(df[df[cf].astype(str) == k][vf])
+            df.loc[df[cf].astype(str) == k, 'd0'] = pca_data[:,0].flatten().tolist()
+            df.loc[df[cf].astype(str) == k, 'd1'] = pca_data[:,1].flatten().tolist()
+        # convert every time series to a data point by category
+        cluster_cat_df = df.groupby(['cluster', cf])[['d0', 'd1']].mean().reset_index()
+        # delete NaN
+        cluster_cat_df.dropna(inplace=True)
+        # convert cluster field to string for discrete color of plotly
+        cluster_cat_df['cluster'] = cluster_cat_df['cluster'].astype(str)
+        # show 2d scatter plot and same cluster has same color
+        fig = px.scatter(cluster_cat_df, x='d0', y='d1', color='cluster', symbol=cf)
+    else:
+        df['center'] = None
+        pca = PCA(n_components=1)
+        for k, v in cluster_dict.items():
+            pca_data = pca.fit_transform(df[df[cf].astype(str) == k][vf])
+            df.loc[df[cf].astype(str) == k, 'center'] = pca_data.flatten().tolist()
+        # build center lines
+        fig = px.line(df, x=df.index, y='center', color=cf, facet_col='cluster', facet_col_wrap=col_wrap)
     fig.for_each_annotation(lambda a: a.update(text=cluster_cnt[int(a.text.split("=")[-1])]))
-    fig.for_each_trace(lambda trace: trace.update(legendrank=sorted_dict[trace.name]))
-    fig.update_layout(title=title, legend_title_text=f'{cf} ({len(sorted_name)})', xaxis_title='')
+    fig.for_each_xaxis(lambda x: x.update(title=''))
+    fig.update_layout(title=title, legend_title_text=f'{cf} ({len(cat_name)})', xaxis_title='', hovermode='x')
     return fig
 
 
@@ -3310,10 +3375,6 @@ def plt_ts_anc(df, cfg, fields):
     if cfg.get('method'):
         method = cfg['method']
 
-    metric = 'euclidean'
-    if cfg.get('metric'):
-        metric = cfg['metric']
-
     # contamination: 默认为0.05，即5%的异常值
     # irq_coff: 默认为1.6，即1.6倍IQR
     # sigma_coff: 默认为3，即3倍标准差
@@ -3323,7 +3384,6 @@ def plt_ts_anc(df, cfg, fields):
         threshold = cfg['threshold']
 
     vf = cfg['vf']
-    y_pred = None
     match method:
         case 'fft':
             # default value is 1k Hz
@@ -3348,14 +3408,9 @@ def plt_ts_anc(df, cfg, fields):
             psd_power = np.round(psd_power, 4)
 
             psd_df = pd.DataFrame({'freq': psd_freq, 'power': psd_power})
-            psd_df = psd_df.sort_values(by='power', ascending=False)
             # get top 5 by power
-            top_power = psd_df.head(5)
+            top_power = psd_df.nlargest(5, 'power')
             top_power = top_power[top_power['power'] > 0]
-
-            # sort by index
-            psd_df.sort_index(inplace=True)
-            top_power.sort_index(inplace=True)
         case '_':
             return fig
 
@@ -3384,15 +3439,19 @@ resample time series based on config 'period' and 'agg'
 """
 def ts_resample(df: pd.DataFrame, cfg: dict, fields: list, trans: dict = None, fill: bool = True):
     ts_name = df.index.name
+    cat_field = cfg.get('cat')
     if cfg.get('period') is None and cfg.get('agg'):
         # convert ts index to a column for groupby
         df.reset_index(inplace=True)
         # group by ts and cat
-        group_fields = [ts_name, cfg['cat']] if cfg.get('cat') else [ts_name]
+        group_fields = [ts_name, cat_field] if cat_field else [ts_name]
         # aggregate data
         df = df.groupby(group_fields).agg(cfg['agg'])
         # convert multiple index to columns
         df.reset_index(inplace=True)
+        if cat_field:
+            df.sort_values(by=group_fields, key=lambda x: x.astype(str) if x.name == cat_field else x,
+                                 inplace=True)
         # set ts field as index
         df.set_index(ts_name, inplace=True)
         # sort timestamp
@@ -3442,7 +3501,14 @@ def ts_resample(df: pd.DataFrame, cfg: dict, fields: list, trans: dict = None, f
     if cfg.get('cat'):
         cat_field = cfg['cat']
         resampled_df = df.groupby(cat_field).apply(lambda g: g.resample(period).agg(agg).reindex(full_range))
-        resampled_df.reset_index(level=cat_field, drop=False, inplace=True)
+        # set ts_name to index name of None
+        resampled_df.index.names = [cat_field, ts_name]
+        # convert multiple index to regular columns for sorting
+        resampled_df.reset_index(inplace=True)
+        # sort  by ts_name and cat_field following time and dictionary order
+        resampled_df.sort_values(by=[ts_name, cat_field], key=lambda x: x.astype(str) if x.name == cat_field else x, inplace=True)
+        # set ts_name as index
+        resampled_df.set_index(ts_name, inplace=True)
     else:
         # all are value fields
         resampled_df = df.resample(period).agg(agg).reindex(full_range)
